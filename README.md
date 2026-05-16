@@ -101,7 +101,13 @@ npm start
 - AI API Key
 - AI Base URL 和模型名。内网 MiniMax-M2.7 走 Anthropic 兼容接口时，模型名填 `MiniMax-M2.7`
 
-GitHub Token 可选。未配置时也能拉取公开 PR，但容易遇到 GitHub API 低频率限制。
+GitHub Token 可选。未配置时也能拉取公开 PR，但容易遇到 GitHub API 低频率限制。建议配置 `GITHUB_TOKEN`，也兼容 `GH_TOKEN` 和 `GITHUB_AUTH_TOKEN`：
+
+```env
+GITHUB_TOKEN=ghp_REPLACE_ME
+```
+
+也可以在页面右上角“设置”里填写 `GitHub Token`。读取上游公开 PR 只需要 GitHub API 访问能力，使用 classic token 时给 `public_repo` 权限即可。
 
 ## 迁移到另一台内网电脑
 

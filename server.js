@@ -220,7 +220,7 @@ function loadSettings() {
     minimaxApiKey:    process.env.MINIMAX_API_KEY || '',
     minimaxModel:     process.env.MINIMAX_MODEL || 'MiniMax-Text-01',
     minimaxBaseUrl:   process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1',
-    githubToken:      process.env.GITHUB_TOKEN || '',
+    githubToken:      process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_AUTH_TOKEN || '',
     proxy:            process.env.HTTPS_PROXY || process.env.HTTP_PROXY || claudeDefaults.proxy || '',
     ...saved,
   };
@@ -356,7 +356,7 @@ async function callMiniMax(prompt, s) {
 function githubHeaders() {
   const s = loadSettings();
   const h = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'gaussdb-pr-tracker' };
-  if (s.githubToken) h['Authorization'] = `token ${s.githubToken}`;
+  if (s.githubToken) h['Authorization'] = `Bearer ${s.githubToken}`;
   return h;
 }
 
