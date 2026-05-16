@@ -4,10 +4,11 @@ import { Anthropic } from '@anthropic-ai/sdk';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import {
   readFileSync, writeFileSync, existsSync,
-  mkdirSync, readdirSync
+  mkdirSync, readdirSync, statSync
 } from 'fs';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -30,23 +31,197 @@ function defaultAiProvider() {
   return process.env.MINIMAX_API_KEY ? 'minimax' : 'anthropic';
 }
 
+const CLAUDE_ENV_KEYS = [
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+];
+
+function maskSecret(value) {
+  if (!value) return '';
+  if (value.length <= 8) return '****';
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function addClaudeEnv(env, key, value) {
+  if (CLAUDE_ENV_KEYS.includes(key) && typeof value === 'string' && value.trim() && !env[key]) {
+    env[key] = value.trim();
+  }
+}
+
+function mergeClaudeEnv(target, source) {
+  for (const [key, value] of Object.entries(source)) addClaudeEnv(target, key, value);
+}
+
+function extractClaudeEnv(value, depth = 0) {
+  const env = {};
+  if (!value || depth > 4) return env;
+
+  if (Array.isArray(value)) {
+    for (const item of value) mergeClaudeEnv(env, extractClaudeEnv(item, depth + 1));
+    return env;
+  }
+
+  if (typeof value !== 'object') return env;
+
+  for (const key of CLAUDE_ENV_KEYS) addClaudeEnv(env, key, value[key]);
+
+  if (value.env && typeof value.env === 'object') {
+    mergeClaudeEnv(env, extractClaudeEnv(value.env, depth + 1));
+  }
+
+  if (Array.isArray(value.conflicts)) {
+    for (const item of value.conflicts) addClaudeEnv(env, item.varName, item.varValue);
+  }
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === 'env' || key === 'conflicts') continue;
+    if (nested && typeof nested === 'object') mergeClaudeEnv(env, extractClaudeEnv(nested, depth + 1));
+  }
+
+  return env;
+}
+
+function claudeSettingsFromEnv(env) {
+  const anthropicApiKey = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || '';
+  const anthropicModel = env.ANTHROPIC_MODEL
+    || env.ANTHROPIC_DEFAULT_SONNET_MODEL
+    || env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+    || env.ANTHROPIC_DEFAULT_OPUS_MODEL
+    || '';
+  if (!anthropicApiKey && !env.ANTHROPIC_BASE_URL && !anthropicModel) return null;
+
+  return {
+    aiProvider: 'anthropic',
+    anthropicApiKey,
+    anthropicBaseUrl: env.ANTHROPIC_BASE_URL || '',
+    anthropicModel,
+    proxy: env.HTTPS_PROXY || env.HTTP_PROXY || '',
+  };
+}
+
+function readJsonConfig(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function addFileCandidate(candidates, path, sourceType) {
+  if (!path || !existsSync(path)) return;
+  try {
+    if (!statSync(path).isFile()) return;
+  } catch {
+    return;
+  }
+  candidates.push({ path, sourceType });
+}
+
+function claudeConfigCandidates() {
+  const candidates = [];
+  const home = homedir();
+
+  addFileCandidate(candidates, process.env.CLAUDE_CONFIG_PATH, 'custom');
+  addFileCandidate(candidates, join(home, '.claude', 'settings.json'), 'claude-code');
+  addFileCandidate(candidates, join(home, '.claude.json'), 'claude-code');
+  addFileCandidate(candidates, join(process.env.APPDATA || '', 'Claude', 'settings.json'), 'claude-code');
+  addFileCandidate(candidates, join(process.env.LOCALAPPDATA || '', 'claude-cli-nodejs', 'settings.json'), 'claude-code');
+
+  const backupDir = join(home, '.cc-switch', 'backups');
+  try {
+    readdirSync(backupDir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^env-backup-.*\.json$/i.test(entry.name))
+      .map(entry => join(backupDir, entry.name))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+      .forEach(path => addFileCandidate(candidates, path, 'cc-switch-backup'));
+  } catch {}
+
+  return candidates;
+}
+
+function findClaudeCodeConfigs({ includeProcessEnv = true } = {}) {
+  const configs = [];
+
+  if (includeProcessEnv) {
+    const settings = claudeSettingsFromEnv(process.env);
+    if (settings) configs.push({ sourcePath: 'process.env', sourceType: 'environment', settings });
+  }
+
+  for (const candidate of claudeConfigCandidates()) {
+    const json = readJsonConfig(candidate.path);
+    if (!json) continue;
+
+    const env = extractClaudeEnv(json);
+    const settings = claudeSettingsFromEnv(env);
+    if (!settings) continue;
+
+    configs.push({
+      sourcePath: candidate.path,
+      sourceType: candidate.sourceType,
+      settings,
+    });
+  }
+
+  const seen = new Set();
+  return configs
+    .filter(config => {
+      const key = [
+        config.settings.anthropicApiKey,
+        config.settings.anthropicBaseUrl,
+        config.settings.anthropicModel,
+        config.sourcePath,
+      ].join('|');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((config, index) => ({ ...config, id: String(index) }));
+}
+
+function publicClaudeConfig(config) {
+  return {
+    id: config.id,
+    sourcePath: config.sourcePath,
+    sourceType: config.sourceType,
+    aiProvider: config.settings.aiProvider,
+    anthropicBaseUrl: config.settings.anthropicBaseUrl,
+    anthropicModel: config.settings.anthropicModel,
+    hasAnthropicKey: !!config.settings.anthropicApiKey,
+    tokenPreview: maskSecret(config.settings.anthropicApiKey),
+    hasProxy: !!config.settings.proxy,
+  };
+}
+
+function loadClaudeCodeDefaults() {
+  const config = findClaudeCodeConfigs({ includeProcessEnv: false })[0];
+  return config?.settings || {};
+}
+
 function loadSettings() {
   let saved = {};
   if (existsSync(SETTINGS_FILE)) {
     try { saved = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')); } catch {}
   }
+  const claudeDefaults = loadClaudeCodeDefaults();
   const settings = {
     // Defaults from env vars; saved settings win
     gaussdbOdbcPath:  process.env.GAUSSDB_ODBC_PATH || '',
     aiProvider:       defaultAiProvider(),
-    anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL  || '',
-    anthropicApiKey:  process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || '',
-    anthropicModel:   process.env.ANTHROPIC_MODEL || process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4.6',
+    anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || claudeDefaults.anthropicBaseUrl || '',
+    anthropicApiKey:  process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || claudeDefaults.anthropicApiKey || '',
+    anthropicModel:   process.env.ANTHROPIC_MODEL || process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || claudeDefaults.anthropicModel || 'claude-sonnet-4.6',
     minimaxApiKey:    process.env.MINIMAX_API_KEY || '',
     minimaxModel:     process.env.MINIMAX_MODEL || 'MiniMax-Text-01',
     minimaxBaseUrl:   process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1',
     githubToken:      process.env.GITHUB_TOKEN || '',
-    proxy:            process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '',
+    proxy:            process.env.HTTPS_PROXY || process.env.HTTP_PROXY || claudeDefaults.proxy || '',
     ...saved,
   };
   settings.aiProvider = normalizeAiProvider(settings.aiProvider);
@@ -103,6 +278,28 @@ app.post('/api/settings', (req, res) => {
   }
   saveSettings(patch);
   res.json({ ok: true });
+});
+
+app.get('/api/claude-code-configs', (req, res) => {
+  const configs = findClaudeCodeConfigs().map(publicClaudeConfig);
+  res.json({ configs });
+});
+
+app.post('/api/import-claude-code-config', (req, res) => {
+  const configs = findClaudeCodeConfigs();
+  const config = configs.find(item => item.id === String(req.body.id ?? '0'));
+  if (!config) return res.status(404).json({ error: '未找到可导入的 ClaudeCode 配置' });
+
+  const patch = {
+    aiProvider: 'anthropic',
+    anthropicApiKey: config.settings.anthropicApiKey,
+    anthropicBaseUrl: config.settings.anthropicBaseUrl || '',
+    anthropicModel: config.settings.anthropicModel || 'claude-sonnet-4.6',
+  };
+  if (config.settings.proxy) patch.proxy = config.settings.proxy;
+
+  saveSettings(patch);
+  res.json({ ok: true, config: publicClaudeConfig(config) });
 });
 
 // ─── AI abstraction layer ───────────────────────────────────────────────────

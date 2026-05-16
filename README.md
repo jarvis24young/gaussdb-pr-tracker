@@ -48,6 +48,30 @@ GAUSSDB_ODBC_PATH=D:/GaussDB/openGauss-connector-odbc
 
 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 会被后端直接读取。也可以不写 `.env`，首次打开页面时在配置页填写。
 
+## 从 ClaudeCode 自动导入
+
+如果本机已经安装并配置过 ClaudeCode，工具会自动扫描常见配置位置：
+
+- `~/.claude/settings.json`
+- `~/.claude.json`
+- `%APPDATA%\Claude\settings.json`
+- `%LOCALAPPDATA%\claude-cli-nodejs\settings.json`
+- `~/.cc-switch/backups/env-backup-*.json`
+
+后端只识别以下 ClaudeCode 环境变量：
+
+- `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY`
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_MODEL`
+- `ANTHROPIC_DEFAULT_SONNET_MODEL`
+- `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- `ANTHROPIC_DEFAULT_OPUS_MODEL`
+- `HTTP_PROXY` / `HTTPS_PROXY`
+
+首次打开页面时可以点击“自动导入”，系统会把 ClaudeCode 的 Anthropic 兼容配置迁移到本项目的 `data/settings.json`。页面和接口只展示脱敏 token，例如 `sk-x...xxxx`，不会把完整密钥返回到前端列表或日志。
+
+如果不点击导入，后端在未配置本项目 AI Key 时，也会优先把 ClaudeCode 配置作为默认 AI 配置读取。因此内网机器只要已有 ClaudeCode 配置，通常只需要配置 `GAUSSDB_ODBC_PATH` 或在页面填写本地 ODBC 仓库路径。
+
 ## 本机运行
 
 ```powershell
