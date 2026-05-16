@@ -581,15 +581,37 @@ function buildResult(prNumber, pr, files, fileContexts, analysis) {
   };
 }
 
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const DEFAULT_PORT = 3000;
+const PORT = parseInt(process.env.PORT || String(DEFAULT_PORT), 10);
+const MAX_PORT_ATTEMPTS = process.env.PORT ? 1 : 20;
 
-app.listen(PORT, () => {
+function logStartup(port) {
   const s = loadSettings();
   const provider = s.aiProvider || 'anthropic';
-  console.log(`GaussDB PR Tracker → http://localhost:${PORT}`);
+  console.log(`GaussDB PR Tracker → http://localhost:${port}`);
   console.log(`  Provider : ${provider.toUpperCase()}`);
   console.log(`  Model    : ${provider === 'minimax' ? s.minimaxModel : s.anthropicModel}`);
   console.log(`  Base URL : ${provider === 'minimax' ? s.minimaxBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com')}`);
   console.log(`  Proxy    : ${s.proxy || '(无)'}`);
   console.log(`  ODBC Path: ${s.gaussdbOdbcPath || '(未配置)'}`);
-});
+}
+
+function startServer(port, remainingAttempts = MAX_PORT_ATTEMPTS) {
+  const server = app.listen(port, () => logStartup(port));
+  server.on('error', err => {
+    if (err.code === 'EADDRINUSE' && remainingAttempts > 1) {
+      console.warn(`Port ${port} is already in use, trying ${port + 1}...`);
+      startServer(port + 1, remainingAttempts - 1);
+      return;
+    }
+
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use. Set another port, for example: PORT=${port + 1} npm start`);
+    } else {
+      console.error(err);
+    }
+    process.exit(1);
+  });
+}
+
+startServer(PORT);

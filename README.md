@@ -88,6 +88,13 @@ npm start
 http://localhost:3000
 ```
 
+如果 `3000` 端口已被占用，服务会自动尝试 `3001`、`3002` 等后续端口，控制台会打印实际访问地址。也可以手动指定：
+
+```powershell
+$env:PORT=3001
+npm start
+```
+
 首次配置至少需要：
 
 - 本地 GaussDB ODBC 仓库路径，例如 `D:\GaussDB\openGauss-connector-odbc`
