@@ -571,13 +571,17 @@ const App = {
       const data = await fetch('/api/claude-code-configs').then(r => r.json());
       if (data.configs?.length) {
         const best = data.configs[0];
-        el.textContent = `已发现 ${data.configs.length} 个配置，推荐：${best.anthropicModel || '未指定模型'} @ ${best.anthropicBaseUrl || '默认地址'}，Token ${best.tokenPreview}`;
+        el.textContent = `已发现 ${data.configs.length} 个配置，默认候选：${this.describeClaudeConfig(best)}`;
       } else {
         el.textContent = '未发现 ClaudeCode 配置，可继续手动填写 AI 配置';
       }
     } catch {
       el.textContent = '扫描 ClaudeCode 配置失败，可继续手动填写 AI 配置';
     }
+  },
+
+  describeClaudeConfig(config) {
+    return `${config.anthropicModel || '未指定模型'} @ ${config.anthropicBaseUrl || '默认地址'}，Token ${config.tokenPreview || '无'}，来源 ${config.sourcePath}`;
   },
 
   async importClaudeCodeConfig() {
@@ -592,7 +596,27 @@ const App = {
       return;
     }
 
-    const best = data.configs[0];
+    const options = data.configs
+      .map((config, idx) => `${idx + 1}. ${this.describeClaudeConfig(config)}`)
+      .join('\n');
+    const selected = window.prompt(
+      `请选择要导入的 ClaudeCode 配置序号：\n\n${options}\n\n将写入本项目的 data/settings.json。`,
+      '1'
+    );
+    if (selected === null) {
+      if (statusEl) statusEl.textContent = `已取消导入。发现 ${data.configs.length} 个 ClaudeCode 配置`;
+      return;
+    }
+
+    const index = Number.parseInt(selected, 10) - 1;
+    const best = data.configs[index];
+    if (!best) {
+      const msg = '选择的配置序号无效';
+      if (statusEl) statusEl.textContent = msg;
+      this.showToast(msg, 'error');
+      return;
+    }
+
     const imported = await fetch('/api/import-claude-code-config', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -608,8 +632,9 @@ const App = {
     const s = await fetch('/api/settings').then(r => r.json());
     this.applySettingsToForms(s);
     if (statusEl) {
-      statusEl.textContent = `已导入：${best.anthropicModel || '未指定模型'} @ ${best.anthropicBaseUrl || '默认地址'}，Token ${best.tokenPreview}`;
+      statusEl.textContent = `已导入：${this.describeClaudeConfig(best)}；写入 ${imported.settingsPath}`;
     }
+    window.alert(`ClaudeCode AI 配置已导入。\n\n来源配置：\n${best.sourcePath}\n\n写入文件：\n${imported.settingsPath}`);
     this.showToast('ClaudeCode AI 配置已导入', 'success');
   },
 

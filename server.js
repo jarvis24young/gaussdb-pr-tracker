@@ -299,7 +299,11 @@ app.post('/api/import-claude-code-config', (req, res) => {
   if (config.settings.proxy) patch.proxy = config.settings.proxy;
 
   saveSettings(patch);
-  res.json({ ok: true, config: publicClaudeConfig(config) });
+  res.json({
+    ok: true,
+    config: publicClaudeConfig(config),
+    settingsPath: SETTINGS_FILE,
+  });
 });
 
 // ─── AI abstraction layer ───────────────────────────────────────────────────

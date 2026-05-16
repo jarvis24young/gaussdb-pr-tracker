@@ -68,7 +68,7 @@ GAUSSDB_ODBC_PATH=D:/GaussDB/openGauss-connector-odbc
 - `ANTHROPIC_DEFAULT_OPUS_MODEL`
 - `HTTP_PROXY` / `HTTPS_PROXY`
 
-首次打开页面时可以点击“自动导入”，系统会把 ClaudeCode 的 Anthropic 兼容配置迁移到本项目的 `data/settings.json`。页面和接口只展示脱敏 token，例如 `sk-x...xxxx`，不会把完整密钥返回到前端列表或日志。
+首次打开页面时可以点击“自动导入”。系统会弹出候选配置列表，显示来源路径、模型、Base URL 和脱敏 token；选择后会把 ClaudeCode 的 Anthropic 兼容配置迁移到本项目的 `data/settings.json`，并弹窗显示实际写入路径。页面和接口只展示脱敏 token，例如 `sk-x...xxxx`，不会把完整密钥返回到前端列表或日志。
 
 如果不点击导入，后端在未配置本项目 AI Key 时，也会优先把 ClaudeCode 配置作为默认 AI 配置读取。因此内网机器只要已有 ClaudeCode 配置，通常只需要配置 `GAUSSDB_ODBC_PATH` 或在页面填写本地 ODBC 仓库路径。
 
