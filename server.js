@@ -323,7 +323,7 @@ async function callAnthropic(prompt, s) {
   const client = new Anthropic(opts);
   const msg = await client.messages.create({
     model: s.anthropicModel || 'claude-sonnet-4.6',
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   });
   return msg.content[0].text;
@@ -343,7 +343,7 @@ async function callMiniMax(prompt, s) {
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2048,
+      max_tokens: 4096,
     }),
   };
   if (s.proxy) fetchOpts.agent = new HttpsProxyAgent(s.proxy);
@@ -472,17 +472,24 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
       return res.json(result);
     }
 
-    const rawText = await callAI(buildPrompt(pr, prNumber, fileContexts));
+    const prompt = buildPrompt(pr, prNumber, fileContexts);
+    const rawText = await callAI(prompt);
 
     let analysis;
-    try {
-      const m = rawText.match(/\{[\s\S]*\}/);
-      analysis = JSON.parse(m[0]);
-    } catch {
+    try { analysis = parseAnalysisJson(rawText); } catch {}
+    if (!analysis) {
+      try {
+        const repairedText = await callAI(buildJsonRepairPrompt(rawText));
+        analysis = parseAnalysisJson(repairedText);
+      } catch {}
+    }
+    if (!analysis) {
       analysis = {
-        summary: rawText.slice(0, 200),
+        summary: stripReasoningText(rawText).slice(0, 200),
         bugType: '其他', riskLevel: 'UNKNOWN',
-        riskReason: 'AI 输出解析失败，请重新分析',
+        fixStatus: 'UNCLEAR',
+        riskReason: 'AI 输出不是合法 JSON，已去除推理文本后仍解析失败。请重新分析或更换非推理模型。',
+        evidence: [],
         affectedFiles: [], recommendation: '', hasCorrespondingCode: false,
       };
     }
@@ -623,7 +630,13 @@ function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch
 }
 
 function buildPrompt(pr, prNumber, fileContexts) {
-  return `你是资深数据库驱动开发工程师，熟悉 psqlodbc 与 GaussDB ODBC 驱动代码。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
+  return `/no_think
+你是资深数据库驱动开发工程师，熟悉 psqlodbc 与 GaussDB ODBC 驱动代码。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
+
+重要输出约束：
+- 只输出一个 JSON 对象。
+- 不要输出 <think>、</think>、思考过程、解释文字、markdown 代码块。
+- 第一个字符必须是 {，最后一个字符必须是 }。
 
 ## 任务
 分析 psqlodbc 社区 PR #${prNumber}，判断本地 GaussDB ODBC 仓库是否：
@@ -691,6 +704,83 @@ ${f.gaussdbSnippet
   "recommendation": "如果 ALREADY_FIXED 写无需修改；如果 NEEDS_FIX 写具体修复点；如果 UNCLEAR 写需要人工确认的最小代码点",
   "hasCorrespondingCode": true
 }`;
+}
+
+function stripReasoningText(text) {
+  return String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/```(?:json)?/gi, '')
+    .replace(/```/g, '')
+    .trim();
+}
+
+function extractBalancedJsonObjectFrom(input, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < input.length; i++) {
+    const ch = input[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) return input.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function candidateJsonObjects(text) {
+  const input = stripReasoningText(text);
+  const candidates = [];
+  for (let start = input.indexOf('{'); start >= 0; start = input.indexOf('{', start + 1)) {
+    const candidate = extractBalancedJsonObjectFrom(input, start);
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function parseAnalysisJson(text) {
+  const cleaned = stripReasoningText(text);
+  try { return JSON.parse(cleaned); } catch {}
+
+  const fenced = cleaned.match(/```json\s*([\s\S]*?)\s*```/i) || cleaned.match(/```\s*([\s\S]*?)\s*```/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch {}
+  }
+
+  for (const candidate of candidateJsonObjects(cleaned)) {
+    try { return JSON.parse(candidate); } catch {}
+  }
+  return null;
+}
+
+function buildJsonRepairPrompt(rawText) {
+  return `/no_think
+下面是一段模型输出。请删除所有 <think>、解释、markdown，只提取或重写为一个严格合法 JSON 对象。
+要求：
+- 只输出 JSON 对象，不要输出任何其他字符。
+- 字段必须包含 summary, fixStatus, bugType, riskLevel, riskReason, evidence, affectedFiles, recommendation, hasCorrespondingCode。
+- fixStatus 只能是 ALREADY_FIXED, NEEDS_FIX, NOT_PRESENT, UNCLEAR。
+- riskLevel 只能是 HIGH, MEDIUM, LOW, NOT_APPLICABLE, UNKNOWN。
+- evidence 和 affectedFiles 必须是数组。
+
+原始输出：
+${String(rawText || '').slice(0, 6000)}`;
 }
 
 function normalizeAnalysis(analysis, fileContexts) {
