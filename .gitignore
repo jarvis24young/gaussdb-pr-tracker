@@ -1,0 +1,12 @@
+node_modules/
+npm-debug.log*
+.env
+.env.*
+!.env.example
+
+# Contains API keys — never commit
+data/settings.json
+
+# Cached analyses (company internal data)
+data/analysis_*.json
+data/prs.json

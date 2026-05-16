@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GaussDB ODBC · PR 追踪分析平台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .risk-HIGH   { background:#fee2e2; color:#991b1b; border-color:#fca5a5; }
+    .risk-MEDIUM { background:#ffedd5; color:#9a3412; border-color:#fdba74; }
+    .risk-LOW    { background:#dbeafe; color:#1e40af; border-color:#93c5fd; }
+    .risk-NOT_APPLICABLE { background:#f3f4f6; color:#6b7280; border-color:#d1d5db; }
+    .risk-UNKNOWN { background:#ede9fe; color:#6d28d9; border-color:#c4b5fd; }
+    .risk-none   { background:#f9fafb; color:#9ca3af; border-color:#e5e7eb; }
+
+    .slide-in  { animation: slideIn .25s ease-out; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity:0; } to { transform: translateX(0); opacity:1; } }
+
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .fade-in { animation: fadeIn .3s ease; }
+    @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+  .filter-tab {
+    padding: 6px 12px; font-size:12px; border-radius:8px 8px 0 0;
+    color:#64748b; cursor:pointer; transition:all .15s;
+    border: 1px solid transparent; border-bottom: none;
+    display:inline-flex; align-items:center; margin-bottom:-1px;
+  }
+  .filter-tab:hover  { background:#e2e8f0; color:#334155; }
+  .filter-tab.active { background:#fff; color:#1e40af; border-color:#e2e8f0; font-weight:600; }
+
+  .pr-row { cursor:pointer; transition:background .1s; }
+  .pr-row:hover    { background:#f8fafc; }
+  .pr-row.selected { background:#eff6ff; }
+  .pr-row td       { border-bottom: 1px solid #f1f5f9; }
+
+  .risk-badge {
+    display:inline-flex; align-items:center; gap:4px;
+    padding:2px 8px; border-radius:9999px; font-size:11px; font-weight:600;
+    border-width:1px; border-style:solid;
+  }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen font-sans text-slate-800">
+
+<!-- ═══════════════════════════════════════════════════════════
+     SETUP PAGE  (shown when not configured)
+════════════════════════════════════════════════════════════ -->
+<div id="page-setup" class="hidden min-h-screen flex items-center justify-center p-6">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg p-8 fade-in">
+    <div class="flex items-center gap-3 mb-6">
+      <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
+        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-xl font-bold text-slate-800">GaussDB ODBC PR 追踪平台</h1>
+        <p class="text-sm text-slate-500">首次使用，请完成以下配置</p>
+      </div>
+    </div>
+
+    <form id="setup-form" class="space-y-5">
+      <!-- Local ODBC path -->
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">
+          本地 GaussDB ODBC 代码路径
+          <span class="text-red-500">*</span>
+        </label>
+        <input id="s-path" type="text"
+               placeholder="例：D:/GaussDB/openGauss-connector-odbc"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+        <p class="text-xs text-slate-400 mt-1">填写本地仓库根目录，系统会自动匹配对应源文件</p>
+      </div>
+
+      <!-- AI provider -->
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">
+          AI 接口类型
+          <span class="text-red-500">*</span>
+        </label>
+        <select id="s-provider" onchange="toggleSetupProviderFields()"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="anthropic">Anthropic 兼容接口（Claude / MiniMax-M2.7 / Poe）</option>
+          <option value="minimax">MiniMax 原生 Chat Completions</option>
+        </select>
+        <p class="text-xs text-slate-400 mt-1">内网 MiniMax-M2.7 如按 ClaudeCode 方式暴露，请选择 Anthropic 兼容接口</p>
+      </div>
+
+      <div id="setup-anthropic-fields" class="space-y-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">API Key</label>
+          <input id="s-anthropic-key" type="password"
+                 placeholder="sk-..."
+                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">Base URL</label>
+          <input id="s-anthropic-baseurl" type="text"
+                 placeholder="例：http://内网AI网关:8888/"
+                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">模型名</label>
+          <input id="s-anthropic-model" type="text"
+                 value="MiniMax-M2.7"
+                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <p class="text-xs text-slate-400">等价于环境变量 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / ANTHROPIC_MODEL</p>
+      </div>
+
+      <div id="setup-minimax-fields" class="hidden space-y-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">MiniMax API Key</label>
+          <input id="s-minimax-key" type="password"
+                 placeholder="eyJ..."
+                 class="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">MiniMax 模型名</label>
+          <input id="s-minimax-model" type="text"
+                 value="MiniMax-Text-01"
+                 class="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">MiniMax Base URL</label>
+          <input id="s-minimax-baseurl" type="text"
+                 value="https://api.minimax.chat/v1"
+                 class="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+        </div>
+        <p class="text-xs text-purple-500">仅在使用 MiniMax 官方 Chat Completions 协议时选择</p>
+      </div>
+
+      <!-- GitHub Token (optional) -->
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">
+          GitHub Token
+          <span class="text-slate-400 font-normal text-xs">（可选，内网访问 GitHub 受限时留空）</span>
+        </label>
+        <input id="s-github" type="password"
+               placeholder="ghp_..."
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+
+      <!-- HTTP Proxy -->
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">
+          HTTP 代理
+          <span class="text-slate-400 font-normal text-xs">（访问 GitHub 或外部 AI 网关时填写，内网直连可留空）</span>
+        </label>
+        <input id="s-proxy" type="text"
+               placeholder="http://127.0.0.1:7890"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+
+      <div id="setup-error" class="hidden text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2"></div>
+
+      <button type="submit"
+              class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition-colors text-sm">
+        保存配置，开始使用
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN DASHBOARD  (placeholder — filled in Segment 2)
+════════════════════════════════════════════════════════════ -->
+<div id="page-main" class="hidden flex flex-col h-screen overflow-hidden">
+
+  <!-- HEADER -->
+  <header class="bg-slate-900 text-white px-6 py-3 flex items-center justify-between shadow-lg flex-shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+        </svg>
+      </div>
+      <div>
+        <span class="font-bold text-base">GaussDB ODBC · PR 追踪分析平台</span>
+        <span class="ml-3 text-xs text-slate-400">基于 psqlodbc 社区 PR，自动识别本地代码风险</span>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="App.refreshPRs()"
+              class="flex items-center gap-1.5 text-sm bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg transition-colors">
+        <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        刷新 PR 列表
+      </button>
+      <button onclick="App.openSettings()"
+              class="flex items-center gap-1.5 text-sm bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        设置
+      </button>
+    </div>
+  </header>
+
+  <!-- STATS CARDS -->
+  <div class="px-6 py-4 bg-white border-b border-slate-200 flex-shrink-0">
+    <div class="grid grid-cols-5 gap-4">
+      <div class="bg-slate-50 rounded-xl p-4 border border-slate-200">
+        <div class="text-2xl font-bold text-slate-800" id="stat-total">—</div>
+        <div class="text-xs text-slate-500 mt-1">社区 Merged PR</div>
+      </div>
+      <div class="bg-blue-50 rounded-xl p-4 border border-blue-200">
+        <div class="text-2xl font-bold text-blue-700" id="stat-analyzed">—</div>
+        <div class="text-xs text-blue-500 mt-1">已完成分析</div>
+      </div>
+      <div class="bg-red-50 rounded-xl p-4 border border-red-200">
+        <div class="text-2xl font-bold text-red-700" id="stat-high">—</div>
+        <div class="text-xs text-red-500 mt-1">HIGH 高风险</div>
+      </div>
+      <div class="bg-orange-50 rounded-xl p-4 border border-orange-200">
+        <div class="text-2xl font-bold text-orange-700" id="stat-medium">—</div>
+        <div class="text-xs text-orange-500 mt-1">MEDIUM 中风险</div>
+      </div>
+      <div class="bg-green-50 rounded-xl p-4 border border-green-200">
+        <div class="text-2xl font-bold text-green-700" id="stat-low">—</div>
+        <div class="text-xs text-green-500 mt-1">LOW 低风险</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT: TABLE + DETAIL PANEL -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- LEFT: PR TABLE -->
+    <div id="table-col" class="flex-1 flex flex-col overflow-hidden transition-all duration-300">
+
+      <!-- FILTER TABS -->
+      <div class="px-6 pt-4 pb-0 bg-slate-50 border-b border-slate-200 flex items-center gap-1 flex-shrink-0">
+        <span class="text-xs text-slate-400 mr-2">筛选：</span>
+        <button class="filter-tab active" data-filter="all">全部</button>
+        <button class="filter-tab" data-filter="unanalyzed">未分析</button>
+        <button class="filter-tab" data-filter="HIGH">
+          <span class="w-2 h-2 bg-red-500 rounded-full inline-block mr-1"></span>HIGH
+        </button>
+        <button class="filter-tab" data-filter="MEDIUM">
+          <span class="w-2 h-2 bg-orange-500 rounded-full inline-block mr-1"></span>MEDIUM
+        </button>
+        <button class="filter-tab" data-filter="LOW">
+          <span class="w-2 h-2 bg-blue-500 rounded-full inline-block mr-1"></span>LOW
+        </button>
+        <button class="filter-tab" data-filter="NOT_APPLICABLE">N/A</button>
+        <div class="ml-auto pb-3">
+          <button onclick="App.analyzeAll()"
+                  class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg transition-colors">
+            批量分析未分析 PR
+          </button>
+        </div>
+      </div>
+
+      <!-- TABLE -->
+      <div class="flex-1 overflow-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-100 sticky top-0 z-10">
+            <tr class="text-xs text-slate-500 uppercase tracking-wide">
+              <th class="px-4 py-3 text-left w-16">PR #</th>
+              <th class="px-4 py-3 text-left">标题</th>
+              <th class="px-4 py-3 text-left w-28">合并时间</th>
+              <th class="px-4 py-3 text-left w-24">变更文件</th>
+              <th class="px-4 py-3 text-center w-28">风险等级</th>
+              <th class="px-4 py-3 text-center w-20">操作</th>
+            </tr>
+          </thead>
+          <tbody id="pr-tbody">
+            <tr>
+              <td colspan="6" class="text-center py-16 text-slate-400">
+                <div class="flex flex-col items-center gap-2">
+                  <svg class="w-10 h-10 text-slate-300 spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                  </svg>
+                  <span>正在加载 PR 列表…</span>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- RIGHT: DETAIL PANEL -->
+    <div id="detail-panel" class="hidden w-96 bg-white border-l border-slate-200 flex flex-col overflow-hidden slide-in">
+
+      <!-- Panel Header -->
+      <div class="px-5 py-4 border-b border-slate-100 flex items-start justify-between flex-shrink-0">
+        <div class="flex-1 min-w-0 pr-3">
+          <div class="text-xs text-slate-400 mb-0.5" id="dp-pr-num">PR #—</div>
+          <div class="text-sm font-semibold text-slate-800 leading-snug" id="dp-pr-title">—</div>
+        </div>
+        <button onclick="App.closeDetail()"
+                class="text-slate-400 hover:text-slate-600 flex-shrink-0 mt-0.5">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Panel Body (scrollable) -->
+      <div class="flex-1 overflow-y-auto p-5 space-y-4">
+
+        <!-- Loading state -->
+        <div id="dp-loading" class="hidden text-center py-12">
+          <svg class="w-8 h-8 text-blue-400 spin mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+          <p class="text-sm text-slate-500">正在调用 AI 分析中…</p>
+          <p class="text-xs text-slate-400 mt-1">通常需要 10-20 秒</p>
+        </div>
+
+        <!-- Error state -->
+        <div id="dp-error" class="hidden bg-red-50 border border-red-200 rounded-xl p-4">
+          <div class="text-sm font-medium text-red-700 mb-1">分析失败</div>
+          <div class="text-xs text-red-600" id="dp-error-msg"></div>
+        </div>
+
+        <!-- Analysis result -->
+        <div id="dp-result" class="hidden space-y-4 fade-in">
+
+          <!-- Risk level + Bug type -->
+          <div class="flex items-center gap-2 flex-wrap">
+            <span id="dp-risk-badge" class="risk-badge text-sm px-3 py-1">—</span>
+            <span id="dp-bug-type"
+                  class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full border border-slate-200">—</span>
+          </div>
+
+          <!-- Summary -->
+          <div class="bg-slate-50 rounded-xl p-4 border border-slate-200">
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">问题摘要</div>
+            <div class="text-sm text-slate-700 leading-relaxed" id="dp-summary">—</div>
+          </div>
+
+          <!-- Risk reason -->
+          <div class="bg-amber-50 rounded-xl p-4 border border-amber-200">
+            <div class="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">风险判断依据</div>
+            <div class="text-sm text-amber-800 leading-relaxed" id="dp-risk-reason">—</div>
+          </div>
+
+          <!-- Matched files -->
+          <div id="dp-files-section">
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">代码匹配情况</div>
+            <div id="dp-files" class="space-y-1.5"></div>
+          </div>
+
+          <!-- Recommendation -->
+          <div class="bg-blue-50 rounded-xl p-4 border border-blue-200">
+            <div class="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">修复建议</div>
+            <div class="text-sm text-blue-800 leading-relaxed" id="dp-recommendation">—</div>
+          </div>
+
+          <!-- Links -->
+          <div class="pt-2 border-t border-slate-100 flex gap-2">
+            <a id="dp-pr-link" href="#" target="_blank"
+               class="flex-1 text-center text-xs bg-slate-800 hover:bg-slate-700 text-white py-2 rounded-lg transition-colors">
+              查看上游 PR ↗
+            </a>
+            <button onclick="App.reanalyze()"
+                    class="flex-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-lg transition-colors">
+              重新分析
+            </button>
+          </div>
+
+        </div><!-- end dp-result -->
+      </div><!-- end panel body -->
+    </div><!-- end detail-panel -->
+
+  </div><!-- end main content -->
+</div><!-- end page-main -->
+
+<!-- ═══════════════════════════════════════════════════════════
+     SETTINGS MODAL  (placeholder — filled in Segment 3)
+════════════════════════════════════════════════════════════ -->
+<div id="modal-settings" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 fade-in">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="font-bold text-slate-800">修改配置</h2>
+      <button onclick="App.closeSettings()" class="text-slate-400 hover:text-slate-600">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <form id="settings-form" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">本地 GaussDB ODBC 代码路径</label>
+        <input id="cfg-path" type="text"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">AI 模型提供商</label>
+        <select id="cfg-provider" onchange="toggleProviderFields()"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="anthropic">Anthropic 兼容接口（Claude / MiniMax-M2.7 / Poe）</option>
+          <option value="minimax">MiniMax 原生 Chat Completions</option>
+        </select>
+      </div>
+      <div id="cfg-anthropic-fields" class="space-y-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide">Anthropic-compatible</div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">API Key（留空不修改）</label>
+          <input id="cfg-apikey" type="password" placeholder="sk-..."
+                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">Base URL</label>
+          <input id="cfg-baseurl" type="text" placeholder="http://内网AI网关:8888/"
+                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">模型名</label>
+          <input id="cfg-model" type="text" placeholder="MiniMax-M2.7"
+                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+      </div>
+      <div id="cfg-minimax-fields" class="hidden space-y-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
+        <div class="text-xs font-semibold text-purple-500 uppercase tracking-wide">MiniMax</div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">API Key（留空不修改）</label>
+          <input id="cfg-minimax-key" type="password" placeholder="eyJ..."
+                 class="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"/>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">模型名</label>
+          <input id="cfg-minimax-model" type="text" placeholder="MiniMax-Text-01"
+                 class="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"/>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">Base URL</label>
+          <input id="cfg-minimax-baseurl" type="text" placeholder="https://api.minimax.chat/v1"
+                 class="w-full border border-purple-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"/>
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">GitHub Token（可选）</label>
+        <input id="cfg-github" type="password" placeholder="留空则不修改"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">
+          HTTP 代理 <span class="text-slate-400 font-normal text-xs">（用于 GitHub 和 AI API，MiniMax 内网可留空）</span>
+        </label>
+        <input id="cfg-proxy" type="text" placeholder="http://127.0.0.1:7890"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button type="button" onclick="App.closeSettings()"
+                class="flex-1 border border-slate-300 text-slate-600 py-2 rounded-lg text-sm hover:bg-slate-50 transition-colors">
+          取消
+        </button>
+        <button type="submit"
+                class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm font-medium transition-colors">
+          保存
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────────────────────
+//  App — state + all logic
+// ──────────────────────────────────────────────────────────────
+const App = {
+  state: {
+    prs:        [],
+    analyses:   {},   // keyed by prNumber
+    selected:   null, // prNumber currently open in detail panel
+    filter:     'all',
+    analyzing:  null, // prNumber being analyzed right now
+  },
+
+  // ── init ──────────────────────────────────────────────────
+  async init() {
+    const s = await fetch('/api/settings').then(r => r.json()).catch(() => ({}));
+    if (!s.configured) {
+      document.getElementById('page-setup').classList.remove('hidden');
+      return;
+    }
+    document.getElementById('page-main').classList.remove('hidden');
+    this.bindFilters();
+    await Promise.all([this.loadPRs(), this.loadAnalyses()]);
+    this.renderStats();
+    this.renderTable();
+  },
+
+  // ── Data loading ──────────────────────────────────────────
+  async loadPRs(refresh = false) {
+    const url = '/api/prs' + (refresh ? '?refresh=1' : '');
+    const icon = document.getElementById('refresh-icon');
+    if (refresh) icon.classList.add('spin');
+    try {
+      const data = await fetch(url).then(r => r.json());
+      if (Array.isArray(data)) {
+        this.state.prs = data;
+      } else {
+        this.showToast('GitHub API 错误: ' + (data.error || data.message || '未知'), 'error');
+      }
+    } catch(e) {
+      this.showToast('网络错误，无法获取 PR 列表', 'error');
+    }
+    icon.classList.remove('spin');
+  },
+
+  async loadAnalyses() {
+    const data = await fetch('/api/analyses').then(r => r.json()).catch(() => []);
+    data.forEach(a => { this.state.analyses[a.prNumber] = a; });
+  },
+
+  async refreshPRs() {
+    await this.loadPRs(true);
+    this.renderStats();
+    this.renderTable();
+  },
+
+  // ── Analyze one PR ───────────────────────────────────────
+  async analyze(prNumber) {
+    this.state.analyzing = prNumber;
+    this.state.selected  = prNumber;
+    this.showDetailPanel(prNumber);
+    this.showDetailLoading();
+    this.renderTable(); // update action button
+
+    const res = await fetch(`/api/analyze/${prNumber}`, { method: 'POST' });
+    const data = await res.json();
+
+    this.state.analyzing = null;
+    if (data.error) {
+      this.showDetailError(data.error);
+    } else {
+      this.state.analyses[prNumber] = data;
+      this.showDetailResult(data);
+    }
+    this.renderStats();
+    this.renderTable();
+  },
+
+  async reanalyze() {
+    if (!this.state.selected) return;
+    delete this.state.analyses[this.state.selected];
+    await this.analyze(this.state.selected);
+  },
+
+  // Batch analyze all unanalyzed PRs sequentially
+  async analyzeAll() {
+    const unanalyzed = this.state.prs.filter(pr => !this.state.analyses[pr.number]);
+    if (unanalyzed.length === 0) { this.showToast('所有 PR 已分析完毕', 'info'); return; }
+    this.showToast(`开始批量分析 ${unanalyzed.length} 个 PR，请耐心等待…`, 'info');
+    for (const pr of unanalyzed) {
+      if (this.state.analyses[pr.number]) continue; // already done
+      await this.analyze(pr.number);
+    }
+    this.showToast('批量分析完成！', 'success');
+  },
+
+  // ── Render: Stats ────────────────────────────────────────
+  renderStats() {
+    const { prs, analyses } = this.state;
+    const vals = Object.values(analyses);
+    document.getElementById('stat-total').textContent    = prs.length;
+    document.getElementById('stat-analyzed').textContent = vals.length;
+    document.getElementById('stat-high').textContent     = vals.filter(a => a.riskLevel === 'HIGH').length;
+    document.getElementById('stat-medium').textContent   = vals.filter(a => a.riskLevel === 'MEDIUM').length;
+    document.getElementById('stat-low').textContent      = vals.filter(a => a.riskLevel === 'LOW').length;
+  },
+
+  // ── Render: Table ─────────────────────────────────────────
+  renderTable() {
+    const { prs, analyses, filter, selected, analyzing } = this.state;
+
+    const filtered = prs.filter(pr => {
+      const a = analyses[pr.number];
+      if (filter === 'all')        return true;
+      if (filter === 'unanalyzed') return !a;
+      return a?.riskLevel === filter;
+    });
+
+    const tbody = document.getElementById('pr-tbody');
+    if (filtered.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-16 text-slate-400 text-sm">
+        当前筛选条件下无数据</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(pr => {
+      const a       = analyses[pr.number];
+      const isAnalyzing = analyzing === pr.number;
+      const isSelected  = selected  === pr.number;
+      const mergedDate  = pr.merged_at
+        ? new Date(pr.merged_at).toLocaleDateString('zh-CN', { month:'2-digit', day:'2-digit', year:'2-digit' })
+        : '—';
+      const cFiles = pr.changed_files ?? '—';
+
+      const riskBadge = a
+        ? `<span class="risk-badge risk-${a.riskLevel}">${riskLabel(a.riskLevel)}</span>`
+        : `<span class="risk-badge risk-none">未分析</span>`;
+
+      const actionBtn = isAnalyzing
+        ? `<div class="flex justify-center"><svg class="w-4 h-4 spin text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></div>`
+        : a
+          ? `<button onclick="App.selectPR(${pr.number})" class="text-xs text-blue-600 hover:text-blue-800 font-medium">查看</button>`
+          : `<button onclick="App.analyze(${pr.number})" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-md transition-colors">分析</button>`;
+
+      return `<tr class="pr-row${isSelected ? ' selected' : ''}" onclick="App.clickRow(${pr.number}, ${!!a})">
+        <td class="px-4 py-3 text-slate-500 font-mono text-xs">#${pr.number}</td>
+        <td class="px-4 py-3 text-slate-800 text-xs leading-snug max-w-xs">
+          <div class="truncate" title="${escHtml(pr.title)}">${escHtml(pr.title)}</div>
+        </td>
+        <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">${mergedDate}</td>
+        <td class="px-4 py-3 text-slate-500 text-xs text-center">${cFiles}</td>
+        <td class="px-4 py-3 text-center">${riskBadge}</td>
+        <td class="px-4 py-3 text-center" onclick="event.stopPropagation()">${actionBtn}</td>
+      </tr>`;
+    }).join('');
+  },
+
+  clickRow(prNumber, hasAnalysis) {
+    if (hasAnalysis) {
+      this.selectPR(prNumber);
+    } else {
+      this.analyze(prNumber);
+    }
+  },
+
+  // ── Detail Panel ─────────────────────────────────────────
+  selectPR(prNumber) {
+    const a = this.state.analyses[prNumber];
+    if (!a) return;
+    this.state.selected = prNumber;
+    this.renderTable();
+    this.showDetailPanel(prNumber);
+    this.showDetailResult(a);
+  },
+
+  showDetailPanel(prNumber) {
+    const pr     = this.state.prs.find(p => p.number === prNumber);
+    const panel  = document.getElementById('detail-panel');
+    panel.classList.remove('hidden');
+    panel.classList.add('slide-in');
+    document.getElementById('dp-pr-num').textContent   = `PR #${prNumber}`;
+    document.getElementById('dp-pr-title').textContent = pr?.title || '';
+    document.getElementById('dp-pr-link').href         = pr?.html_url || '#';
+  },
+
+  showDetailLoading() {
+    document.getElementById('dp-loading').classList.remove('hidden');
+    document.getElementById('dp-result').classList.add('hidden');
+    document.getElementById('dp-error').classList.add('hidden');
+  },
+
+  showDetailError(msg) {
+    document.getElementById('dp-loading').classList.add('hidden');
+    document.getElementById('dp-result').classList.add('hidden');
+    document.getElementById('dp-error').classList.remove('hidden');
+    document.getElementById('dp-error-msg').textContent = msg;
+  },
+
+  showDetailResult(a) {
+    document.getElementById('dp-loading').classList.add('hidden');
+    document.getElementById('dp-error').classList.add('hidden');
+    const result = document.getElementById('dp-result');
+    result.classList.remove('hidden');
+
+    // Risk badge
+    const badge = document.getElementById('dp-risk-badge');
+    badge.className = `risk-badge risk-${a.riskLevel} text-sm px-3 py-1`;
+    badge.textContent = riskLabel(a.riskLevel);
+
+    document.getElementById('dp-bug-type').textContent      = a.bugType || '未知';
+    document.getElementById('dp-summary').textContent       = a.summary || '—';
+    document.getElementById('dp-risk-reason').textContent   = a.riskReason || '—';
+    document.getElementById('dp-recommendation').textContent = a.recommendation || '—';
+
+    // Matched files
+    const filesEl = document.getElementById('dp-files');
+    if (a.matchedFiles?.length) {
+      filesEl.innerHTML = a.matchedFiles.map(f =>
+        `<div class="flex items-start gap-2 text-xs">
+          <span class="text-green-500 mt-0.5 flex-shrink-0">✓</span>
+          <div>
+            <div class="text-slate-500">上游: ${escHtml(f.upstream)}</div>
+            <div class="text-slate-700 font-mono break-all">${escHtml(f.local)}</div>
+          </div>
+        </div>`
+      ).join('');
+    } else if (a.changedFiles?.length) {
+      filesEl.innerHTML = a.changedFiles.slice(0,5).map(f =>
+        `<div class="flex items-center gap-2 text-xs text-slate-400">
+          <span class="text-slate-300">—</span>
+          <span>${escHtml(f)}</span>
+          <span class="text-orange-400 text-xs">（未在本地找到）</span>
+        </div>`
+      ).join('');
+    } else {
+      filesEl.innerHTML = '<div class="text-xs text-slate-400">无文件匹配信息</div>';
+    }
+  },
+
+  closeDetail() {
+    this.state.selected = null;
+    document.getElementById('detail-panel').classList.add('hidden');
+    this.renderTable();
+  },
+
+  // ── Settings Modal ────────────────────────────────────────
+  async openSettings() {
+    const s = await fetch('/api/settings').then(r => r.json());
+    document.getElementById('cfg-path').value           = s.gaussdbOdbcPath  || '';
+    document.getElementById('cfg-provider').value       = s.aiProvider       || 'anthropic';
+    document.getElementById('cfg-baseurl').value        = s.anthropicBaseUrl || '';
+    document.getElementById('cfg-model').value          = s.anthropicModel   || 'MiniMax-M2.7';
+    document.getElementById('cfg-minimax-model').value  = s.minimaxModel     || 'MiniMax-Text-01';
+    document.getElementById('cfg-minimax-baseurl').value= s.minimaxBaseUrl   || 'https://api.minimax.chat/v1';
+    document.getElementById('cfg-proxy').value          = s.proxy            || '';
+    toggleProviderFields();
+    document.getElementById('modal-settings').classList.remove('hidden');
+  },
+
+  closeSettings() {
+    document.getElementById('modal-settings').classList.add('hidden');
+  },
+
+  // ── Filter tabs ───────────────────────────────────────────
+  bindFilters() {
+    document.querySelectorAll('.filter-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.state.filter = btn.dataset.filter;
+        this.renderTable();
+      });
+    });
+  },
+
+  // ── Toast notification ────────────────────────────────────
+  showToast(msg, type = 'info') {
+    const colors = { info:'bg-slate-800', error:'bg-red-600', success:'bg-green-600' };
+    const toast = document.createElement('div');
+    toast.className = `fixed bottom-6 right-6 ${colors[type]} text-white text-sm px-4 py-3 rounded-xl shadow-lg z-50 fade-in`;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+  },
+};
+
+// ── Helpers ────────────────────────────────────────────────
+function riskLabel(level) {
+  return { HIGH:'● HIGH', MEDIUM:'● MEDIUM', LOW:'● LOW',
+           NOT_APPLICABLE:'N/A', UNKNOWN:'?' }[level] || level || '?';
+}
+
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Setup form ────────────────────────────────────────────
+document.getElementById('setup-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const errEl = document.getElementById('setup-error');
+  errEl.classList.add('hidden');
+  const provider = document.getElementById('s-provider').value;
+  const body = {
+    gaussdbOdbcPath: document.getElementById('s-path').value.trim(),
+    aiProvider:       provider,
+    githubToken:      document.getElementById('s-github').value.trim(),
+    proxy:            document.getElementById('s-proxy').value.trim(),
+  };
+  if (provider === 'anthropic') {
+    body.anthropicApiKey = document.getElementById('s-anthropic-key').value.trim();
+    body.anthropicBaseUrl = document.getElementById('s-anthropic-baseurl').value.trim();
+    body.anthropicModel = document.getElementById('s-anthropic-model').value.trim() || 'MiniMax-M2.7';
+  } else {
+    body.minimaxApiKey = document.getElementById('s-minimax-key').value.trim();
+    body.minimaxModel = document.getElementById('s-minimax-model').value.trim() || 'MiniMax-Text-01';
+    body.minimaxBaseUrl = document.getElementById('s-minimax-baseurl').value.trim() || 'https://api.minimax.chat/v1';
+  }
+  const hasProviderKey = provider === 'minimax' ? !!body.minimaxApiKey : !!body.anthropicApiKey;
+  if (!body.gaussdbOdbcPath || !hasProviderKey) {
+    errEl.textContent = '本地代码路径和 API Key 为必填项';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  await fetch('/api/settings', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  location.reload();
+});
+
+// ── Settings form ─────────────────────────────────────────
+function toggleSetupProviderFields() {
+  const provider = document.getElementById('s-provider').value;
+  document.getElementById('setup-anthropic-fields').classList.toggle('hidden', provider !== 'anthropic');
+  document.getElementById('setup-minimax-fields').classList.toggle('hidden', provider !== 'minimax');
+}
+
+function toggleProviderFields() {
+  const provider = document.getElementById('cfg-provider').value;
+  document.getElementById('cfg-anthropic-fields').classList.toggle('hidden', provider !== 'anthropic');
+  document.getElementById('cfg-minimax-fields').classList.toggle('hidden', provider !== 'minimax');
+}
+
+document.getElementById('settings-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const provider = document.getElementById('cfg-provider').value;
+  await fetch('/api/settings', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      gaussdbOdbcPath:  document.getElementById('cfg-path').value.trim(),
+      aiProvider:       provider,
+      anthropicApiKey:  document.getElementById('cfg-apikey').value.trim() || undefined,
+      anthropicBaseUrl: document.getElementById('cfg-baseurl').value.trim(),
+      anthropicModel:   document.getElementById('cfg-model').value.trim(),
+      minimaxApiKey:    document.getElementById('cfg-minimax-key').value.trim() || undefined,
+      minimaxModel:     document.getElementById('cfg-minimax-model').value.trim(),
+      minimaxBaseUrl:   document.getElementById('cfg-minimax-baseurl').value.trim(),
+      githubToken:      document.getElementById('cfg-github').value.trim() || undefined,
+      proxy:            document.getElementById('cfg-proxy').value.trim(),
+    }),
+  });
+  App.closeSettings();
+  App.showToast('配置已保存', 'success');
+});
+
+// ── Boot ─────────────────────────────────────────────────
+App.init();
+</script>
+
+</body>
+</html>

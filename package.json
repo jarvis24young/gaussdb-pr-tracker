@@ -1,0 +1,16 @@
+{
+  "name": "gaussdb-pr-tracker",
+  "version": "1.0.0",
+  "description": "Track upstream psqlodbc PRs and analyze GaussDB ODBC impact",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "https-proxy-agent": "^7.0.5"
+  }
+}
