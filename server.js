@@ -17,6 +17,7 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
+const ANALYSIS_PROMPT_VERSION = 2;
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
 // ─── Settings ───────────────────────────────────────────────────────────────
@@ -322,7 +323,7 @@ async function callAnthropic(prompt, s) {
   const client = new Anthropic(opts);
   const msg = await client.messages.create({
     model: s.anthropicModel || 'claude-sonnet-4.6',
-    max_tokens: 1024,
+    max_tokens: 2048,
     messages: [{ role: 'user', content: prompt }],
   });
   return msg.content[0].text;
@@ -342,7 +343,7 @@ async function callMiniMax(prompt, s) {
     body: JSON.stringify({
       model,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1024,
+      max_tokens: 2048,
     }),
   };
   if (s.proxy) fetchOpts.agent = new HttpsProxyAgent(s.proxy);
@@ -430,7 +431,8 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
   const { prNumber } = req.params;
   const cacheFile = join(DATA_DIR, `analysis_${prNumber}.json`);
   if (existsSync(cacheFile) && !req.query.force) {
-    return res.json(JSON.parse(readFileSync(cacheFile, 'utf8')));
+    const cached = JSON.parse(readFileSync(cacheFile, 'utf8'));
+    if (cached.analysisPromptVersion === ANALYSIS_PROMPT_VERSION) return res.json(cached);
   }
 
   try {
@@ -445,11 +447,15 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
     const srcFiles     = files.filter(f => /\.(c|h)$/.test(f.filename)).slice(0, 6);
     const fileContexts = srcFiles.map(f => {
       const local = findGaussDBFile(f.filename);
+      const patchInfo = parsePatch(f.patch || '');
+      const localSignals = local ? buildLocalPatchSignals(local.content, patchInfo) : null;
       return {
         upstreamFile:   f.filename,
-        patch:          (f.patch || '').slice(0, 2500),
+        patch:          (f.patch || '').slice(0, 4500),
+        patchInfo,
+        localSignals,
         gaussdbPath:    local?.path || null,
-        gaussdbSnippet: local ? extractRelevantSnippet(local.content, f.patch) : null,
+        gaussdbSnippet: local ? extractRelevantSnippet(local.content, f.patch, patchInfo) : null,
       };
     });
 
@@ -457,7 +463,9 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
       const result = buildResult(prNumber, pr, files, [], {
         summary: '此 PR 未修改 C/H 源文件，与驱动逻辑无关',
         bugType: '其他', riskLevel: 'NOT_APPLICABLE',
+        fixStatus: 'NOT_PRESENT',
         riskReason: '变更仅涉及构建脚本/文档/测试等非驱动核心代码',
+        evidence: [],
         affectedFiles: [], recommendation: '无需处理', hasCorrespondingCode: false,
       });
       writeFileSync(cacheFile, JSON.stringify(result, null, 2));
@@ -478,6 +486,7 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
         affectedFiles: [], recommendation: '', hasCorrespondingCode: false,
       };
     }
+    analysis = normalizeAnalysis(analysis, fileContexts);
 
     const result = buildResult(prNumber, pr, files, fileContexts, analysis);
     writeFileSync(cacheFile, JSON.stringify(result, null, 2));
@@ -495,7 +504,10 @@ app.get('/api/analyses', (req, res) => {
   readdirSync(DATA_DIR)
     .filter(f => f.startsWith('analysis_') && f.endsWith('.json'))
     .forEach(f => {
-      try { results.push(JSON.parse(readFileSync(join(DATA_DIR, f), 'utf8'))); } catch {}
+      try {
+        const result = JSON.parse(readFileSync(join(DATA_DIR, f), 'utf8'));
+        if (result.analysisPromptVersion === ANALYSIS_PROMPT_VERSION) results.push(result);
+      } catch {}
     });
   res.json(results.sort((a, b) => new Date(b.analyzedAt) - new Date(a.analyzedAt)));
 });
@@ -516,28 +528,111 @@ app.get('/api/debug', (req, res) => {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function extractRelevantSnippet(fileContent, patch) {
-  if (!patch || !fileContent) return fileContent?.slice(0, 4000) || null;
-  const funcMatches = patch.match(/\b(\w+)\s*\(/g) || [];
-  const funcNames   = [...new Set(funcMatches.map(m => m.replace(/\s*\($/, '')))].slice(0, 5);
-  const lines       = fileContent.split('\n');
-  const relevant    = new Set();
+function parsePatch(patch) {
+  const info = { addedLines: [], removedLines: [], identifiers: [], hunkHeaders: [] };
+  if (!patch) return info;
+
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('@@')) info.hunkHeaders.push(line.slice(0, 200));
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) info.addedLines.push(line.slice(1).trim());
+    if (line.startsWith('-')) info.removedLines.push(line.slice(1).trim());
+  }
+
+  const identifierText = [
+    ...info.addedLines,
+    ...info.removedLines,
+    ...info.hunkHeaders,
+  ].join('\n');
+  const ignored = new Set([
+    'if', 'else', 'for', 'while', 'return', 'sizeof', 'static', 'const',
+    'char', 'int', 'long', 'short', 'void', 'NULL', 'TRUE', 'FALSE',
+  ]);
+  info.identifiers = [...new Set((identifierText.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) || [])
+    .filter(token => !ignored.has(token))
+    .filter(token => !/^PG[A-Z0-9_]*$/.test(token))
+  )].slice(0, 40);
+
+  return info;
+}
+
+function normalizeCodeLine(line) {
+  return String(line || '')
+    .replace(/\/\*.*?\*\//g, '')
+    .replace(/\/\/.*$/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function meaningfulChangedLines(lines) {
+  return lines
+    .map(line => line.trim())
+    .filter(line => line.length >= 8)
+    .filter(line => !/^[{}();]+$/.test(line))
+    .slice(0, 30);
+}
+
+function buildLocalPatchSignals(localContent, patchInfo) {
+  const normalizedLocal = normalizeCodeLine(localContent);
+  const added = meaningfulChangedLines(patchInfo.addedLines);
+  const removed = meaningfulChangedLines(patchInfo.removedLines);
+  const addedPresent = added.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
+  const removedPresent = removed.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
+  return {
+    addedLineCount: added.length,
+    removedLineCount: removed.length,
+    addedPresentCount: addedPresent.length,
+    removedPresentCount: removedPresent.length,
+    addedPresentSamples: addedPresent.slice(0, 8),
+    removedPresentSamples: removedPresent.slice(0, 8),
+  };
+}
+
+function formatSnippetWithLineNumbers(lines, indexes) {
+  return [...indexes].sort((a, b) => a - b)
+    .map(i => `${String(i + 1).padStart(5, ' ')}: ${lines[i]}`)
+    .join('\n');
+}
+
+function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch)) {
+  if (!fileContent) return null;
+  if (!patch) return fileContent.split('\n').slice(0, 160).map((line, i) => `${String(i + 1).padStart(5, ' ')}: ${line}`).join('\n');
+
+  const lines = fileContent.split('\n');
+  const relevant = new Set();
+  const identifiers = patchInfo.identifiers.slice(0, 25);
+
   lines.forEach((line, i) => {
-    if (funcNames.some(fn => line.includes(fn))) {
-      for (let j = Math.max(0, i - 2); j < Math.min(lines.length, i + 60); j++) relevant.add(j);
+    if (identifiers.some(token => line.includes(token))) {
+      for (let j = Math.max(0, i - 35); j < Math.min(lines.length, i + 90); j++) relevant.add(j);
     }
   });
+
+  const functionLikeMatches = patch.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g) || [];
+  const functionNames = [...new Set(functionLikeMatches.map(m => m.replace(/\s*\($/, '')))].slice(0, 8);
+  lines.forEach((line, i) => {
+    if (functionNames.some(fn => line.includes(fn))) {
+      for (let j = Math.max(0, i - 35); j < Math.min(lines.length, i + 90); j++) relevant.add(j);
+    }
+  });
+
   const snippet = relevant.size > 10
-    ? [...relevant].sort((a, b) => a - b).map(i => lines[i]).join('\n')
-    : fileContent.slice(0, 4000);
-  return snippet.slice(0, 4000);
+    ? formatSnippetWithLineNumbers(lines, relevant)
+    : lines.slice(0, 180).map((line, i) => `${String(i + 1).padStart(5, ' ')}: ${line}`).join('\n');
+  return snippet.slice(0, 9000);
 }
 
 function buildPrompt(pr, prNumber, fileContexts) {
-  return `你是资深数据库驱动开发工程师，熟悉 psqlodbc 与 GaussDB ODBC 驱动代码。
+  return `你是资深数据库驱动开发工程师，熟悉 psqlodbc 与 GaussDB ODBC 驱动代码。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
 
 ## 任务
-分析 psqlodbc 社区 PR #${prNumber}，判断 GaussDB ODBC 是否存在相同或相似问题。
+分析 psqlodbc 社区 PR #${prNumber}，判断本地 GaussDB ODBC 仓库是否：
+1. 已经合入等价修复，不需要再改；
+2. 仍存在上游修复前的缺陷，需要同步；
+3. 本地无对应代码；
+4. 证据不足，无法判断。
+
+必须基于给出的 GaussDB 本地代码片段和上游 diff 做证据判断。禁止只说“需要确认/建议检查”。如果本地代码已经包含上游新增的防护逻辑、边界检查、状态重置、unbind 例外等修复行为，应明确输出 ALREADY_FIXED 和 NOT_APPLICABLE。
 
 ## PR 信息
 - 标题：${pr.title}
@@ -551,22 +646,88 @@ ${fileContexts.map(f => `
 ${f.patch}
 \`\`\`
 
+**上游新增修复线索（+ 行，节选）：**
+\`\`\`text
+${f.patchInfo.addedLines.filter(Boolean).slice(0, 40).join('\n') || '无'}
+\`\`\`
+
+**上游删除/替换的旧逻辑线索（- 行，节选）：**
+\`\`\`text
+${f.patchInfo.removedLines.filter(Boolean).slice(0, 40).join('\n') || '无'}
+\`\`\`
+
+**本地代码命中信号：**
+\`\`\`json
+${JSON.stringify(f.localSignals || { found: false }, null, 2)}
+\`\`\`
+
 ${f.gaussdbSnippet
-  ? `**GaussDB 对应代码（${f.gaussdbPath}）：**\n\`\`\`c\n${f.gaussdbSnippet}\n\`\`\``
+  ? `**GaussDB 对应代码（${f.gaussdbPath}，左侧为本地行号）：**\n\`\`\`c\n${f.gaussdbSnippet}\n\`\`\``
   : `**GaussDB 中未找到文件 ${f.upstreamFile}**`
 }
 `).join('\n---\n')}
 
-## 输出（严格 JSON，不含其他内容）
+## 判断规则
+- fixStatus 只能是 "ALREADY_FIXED"、"NEEDS_FIX"、"NOT_PRESENT"、"UNCLEAR" 之一。
+- 如果 GaussDB 本地代码已经有等价修复，riskLevel 必须是 "NOT_APPLICABLE"，recommendation 应说明“无需修改”，riskReason 必须引用本地文件/函数/行号附近的证据。
+- 如果 GaussDB 本地代码仍保留上游删除的旧逻辑，且缺少上游新增修复逻辑，fixStatus 用 "NEEDS_FIX"，riskLevel 按影响给 HIGH/MEDIUM/LOW。
+- 如果只找到文件但证据不足，fixStatus 用 "UNCLEAR"，riskLevel 用 "LOW" 或 "UNKNOWN"，recommendation 写明还缺少哪段代码证据。
+- bugType 只能从 ["内存安全","空指针","缓冲区溢出","逻辑错误","资源泄漏","数据绑定错误","事务状态错误","构建/测试","其他"] 中选一个，不能照抄整个候选列表。
+- evidence 必须列出至少 2 条本地代码证据；如果没有对应代码，写空数组。
+- 不允许把 "A/B/C" 这种候选说明原样输出到任何字段中，必须选择单个枚举值。
+
+## 输出（严格 JSON，不含其他内容，不要 markdown）
 {
-  "summary": "一句话：这个PR修复了什么",
-  "bugType": "内存泄漏/空指针/缓冲区溢出/逻辑错误/资源泄漏/其他",
-  "riskLevel": "HIGH/MEDIUM/LOW/NOT_APPLICABLE",
-  "riskReason": "2-3句具体说明：GaussDB代码中是否有相同模式，引用具体函数名或变量名",
-  "affectedFiles": ["GaussDB受影响文件路径（如已找到）"],
-  "recommendation": "具体修复建议，如：检查xx.c第N行的Y函数是否处理了Z边界条件",
-  "hasCorrespondingCode": true或false
+  "summary": "一句话说明上游 PR 修复的问题",
+  "fixStatus": "NEEDS_FIX",
+  "bugType": "逻辑错误",
+  "riskLevel": "MEDIUM",
+  "riskReason": "明确说明本地是否已修复或仍有风险，必须引用本地函数名、变量名、行号或代码行为",
+  "evidence": [
+    "本地证据1：文件、行号、函数/变量、说明它证明已修复或未修复",
+    "本地证据2：文件、行号、函数/变量、说明它证明已修复或未修复"
+  ],
+  "affectedFiles": ["GaussDB受影响文件路径；如已修复，也列出已确认的文件"],
+  "recommendation": "如果 ALREADY_FIXED 写无需修改；如果 NEEDS_FIX 写具体修复点；如果 UNCLEAR 写需要人工确认的最小代码点",
+  "hasCorrespondingCode": true
 }`;
+}
+
+function normalizeAnalysis(analysis, fileContexts) {
+  const allowedFixStatus = new Set(['ALREADY_FIXED', 'NEEDS_FIX', 'NOT_PRESENT', 'UNCLEAR']);
+  const allowedRisk = new Set(['HIGH', 'MEDIUM', 'LOW', 'NOT_APPLICABLE', 'UNKNOWN']);
+  const allowedBugTypes = new Set([
+    '内存安全', '空指针', '缓冲区溢出', '逻辑错误', '资源泄漏',
+    '数据绑定错误', '事务状态错误', '构建/测试', '其他',
+  ]);
+  const hasLocalMatch = fileContexts.some(f => f.gaussdbPath);
+
+  const result = { ...analysis };
+  if (!allowedFixStatus.has(result.fixStatus)) {
+    result.fixStatus = hasLocalMatch ? 'UNCLEAR' : 'NOT_PRESENT';
+  }
+  if (!allowedRisk.has(result.riskLevel)) {
+    result.riskLevel = result.fixStatus === 'ALREADY_FIXED' || result.fixStatus === 'NOT_PRESENT'
+      ? 'NOT_APPLICABLE'
+      : 'UNKNOWN';
+  }
+  if (!allowedBugTypes.has(result.bugType) || String(result.bugType || '').includes('/')) {
+    result.bugType = '其他';
+  }
+  if (result.fixStatus === 'ALREADY_FIXED') {
+    result.riskLevel = 'NOT_APPLICABLE';
+    if (!result.recommendation || /检查|确认/.test(result.recommendation)) {
+      result.recommendation = '无需修改：本地代码证据显示已经合入等价修复。';
+    }
+  }
+  if (result.fixStatus === 'NOT_PRESENT') {
+    result.riskLevel = 'NOT_APPLICABLE';
+    result.hasCorrespondingCode = false;
+  }
+  if (!Array.isArray(result.evidence)) result.evidence = [];
+  if (!Array.isArray(result.affectedFiles)) result.affectedFiles = [];
+  result.hasCorrespondingCode = result.hasCorrespondingCode === true || (hasLocalMatch && result.fixStatus !== 'NOT_PRESENT');
+  return result;
 }
 
 function buildResult(prNumber, pr, files, fileContexts, analysis) {
@@ -576,6 +737,7 @@ function buildResult(prNumber, pr, files, fileContexts, analysis) {
     prUrl:        pr.html_url,
     mergedAt:     pr.merged_at,
     analyzedAt:   new Date().toISOString(),
+    analysisPromptVersion: ANALYSIS_PROMPT_VERSION,
     changedFiles: files.map(f => f.filename),
     matchedFiles: fileContexts.filter(f => f.gaussdbPath).map(f => ({
       upstream: f.upstreamFile,

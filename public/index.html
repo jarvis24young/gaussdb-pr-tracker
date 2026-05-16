@@ -352,6 +352,8 @@
             <span id="dp-risk-badge" class="risk-badge text-sm px-3 py-1">—</span>
             <span id="dp-bug-type"
                   class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full border border-slate-200">—</span>
+            <span id="dp-fix-status"
+                  class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full border border-slate-200">—</span>
           </div>
 
           <!-- Summary -->
@@ -364,6 +366,11 @@
           <div class="bg-amber-50 rounded-xl p-4 border border-amber-200">
             <div class="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">风险判断依据</div>
             <div class="text-sm text-amber-800 leading-relaxed" id="dp-risk-reason">—</div>
+          </div>
+
+          <div id="dp-evidence-section" class="bg-emerald-50 rounded-xl p-4 border border-emerald-200">
+            <div class="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-2">本地代码证据</div>
+            <div class="text-sm text-emerald-800 leading-relaxed" id="dp-evidence">—</div>
           </div>
 
           <!-- Matched files -->
@@ -668,14 +675,14 @@ const App = {
   },
 
   // ── Analyze one PR ───────────────────────────────────────
-  async analyze(prNumber) {
+  async analyze(prNumber, force = false) {
     this.state.analyzing = prNumber;
     this.state.selected  = prNumber;
     this.showDetailPanel(prNumber);
     this.showDetailLoading();
     this.renderTable(); // update action button
 
-    const res = await fetch(`/api/analyze/${prNumber}`, { method: 'POST' });
+    const res = await fetch(`/api/analyze/${prNumber}${force ? '?force=1' : ''}`, { method: 'POST' });
     const data = await res.json();
 
     this.state.analyzing = null;
@@ -692,7 +699,7 @@ const App = {
   async reanalyze() {
     if (!this.state.selected) return;
     delete this.state.analyses[this.state.selected];
-    await this.analyze(this.state.selected);
+    await this.analyze(this.state.selected, true);
   },
 
   // Batch analyze all unanalyzed PRs sequentially
@@ -821,9 +828,20 @@ const App = {
     badge.textContent = riskLabel(a.riskLevel);
 
     document.getElementById('dp-bug-type').textContent      = a.bugType || '未知';
+    document.getElementById('dp-fix-status').textContent    = fixStatusLabel(a.fixStatus);
     document.getElementById('dp-summary').textContent       = a.summary || '—';
     document.getElementById('dp-risk-reason').textContent   = a.riskReason || '—';
     document.getElementById('dp-recommendation').textContent = a.recommendation || '—';
+
+    const evidenceEl = document.getElementById('dp-evidence');
+    const evidenceSection = document.getElementById('dp-evidence-section');
+    if (Array.isArray(a.evidence) && a.evidence.length) {
+      evidenceEl.innerHTML = a.evidence.map(item => `<div class="mb-1">• ${escHtml(item)}</div>`).join('');
+      evidenceSection.classList.remove('hidden');
+    } else {
+      evidenceEl.textContent = '—';
+      evidenceSection.classList.add('hidden');
+    }
 
     // Matched files
     const filesEl = document.getElementById('dp-files');
@@ -894,6 +912,15 @@ const App = {
 function riskLabel(level) {
   return { HIGH:'● HIGH', MEDIUM:'● MEDIUM', LOW:'● LOW',
            NOT_APPLICABLE:'N/A', UNKNOWN:'?' }[level] || level || '?';
+}
+
+function fixStatusLabel(status) {
+  return {
+    ALREADY_FIXED: '已修复',
+    NEEDS_FIX: '需要同步',
+    NOT_PRESENT: '本地无对应代码',
+    UNCLEAR: '证据不足',
+  }[status] || '同步状态未知';
 }
 
 function escHtml(str) {
