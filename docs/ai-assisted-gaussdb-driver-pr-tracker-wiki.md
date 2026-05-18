@@ -1,7 +1,7 @@
 # AI 辅助 GaussDB 驱动质量排查实践：上游 PR 智能追踪与本地风险分析工具
 
 > 文档定位：用于公司内部 Wiki、AI 辅助编程优秀实践案例沉淀、团队汇报材料补充。  
-> 项目名称：GaussDB ODBC PR Tracker  
+> 项目名称：GaussDB Driver PR Tracker  
 > 适用范围：GaussDB 驱动方向，尤其是 ODBC / JDBC / libpq 等与 PostgreSQL 生态高度相关的客户端驱动代码。  
 > 截图说明：本文已预留截图占位，实际页面截图由维护人补充到对应位置。
 
@@ -232,7 +232,15 @@ flowchart LR
 
 ### 6.2 PR 列表获取
 
-工具从 GitHub API 拉取 `postgresql-interfaces/psqlodbc` 中 closed 且已 merge 的 PR，并在页面展示：
+工具按驱动 Profile 从 GitHub API 拉取对应上游仓库中 closed 且已 merge 的 PR，并在页面展示。当前支持的 Profile 包括 ODBC、JDBC 和 libpq：
+
+| Profile | 上游来源 | 本地代码路径 |
+| --- | --- | --- |
+| ODBC | `postgresql-interfaces/psqlodbc` | GaussDB ODBC 仓库 |
+| JDBC | `pgjdbc/pgjdbc` | GaussDB JDBC 仓库 |
+| libpq | `postgres/postgres` 的 `src/interfaces/libpq/` | GaussDB libpq 目录 |
+
+页面主要展示：
 
 - PR 编号。
 - 标题。
@@ -736,6 +744,6 @@ data/settings.json
 
 ## 结论
 
-GaussDB ODBC PR Tracker 是一次面向真实数据库驱动质量工作的 AI 辅助编程实践。它将上游社区 PR 作为质量信号，将本地 GaussDB 驱动代码作为分析对象，通过 AI 完成初筛、匹配、判断和结构化输出，最终形成可视化、可复核、可持续运行的质量排查工作流。
+GaussDB Driver PR Tracker 是一次面向真实数据库驱动质量工作的 AI 辅助编程实践。它将上游社区 PR 作为质量信号，将本地 GaussDB 驱动代码作为分析对象，通过 AI 完成初筛、匹配、判断和结构化输出，最终形成可视化、可复核、可持续运行的质量排查工作流。
 
 该实践的意义在于：AI 不只是帮助个人写代码，而是可以嵌入团队工程流程，成为提升质量排查效率和研发协同效率的基础工具。

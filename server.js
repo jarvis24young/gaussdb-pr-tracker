@@ -17,8 +17,89 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 2;
+const ANALYSIS_PROMPT_VERSION = 3;
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+
+const DRIVER_PROFILES = {
+  odbc: {
+    id: 'odbc',
+    name: 'GaussDB ODBC',
+    shortName: 'ODBC',
+    upstreamRepo: 'postgresql-interfaces/psqlodbc',
+    upstreamLabel: 'psqlodbc 社区',
+    upstreamPathPrefix: '',
+    localPathKey: 'gaussdbOdbcPath',
+    envPathKey: 'GAUSSDB_ODBC_PATH',
+    localPathLabel: '本地 GaussDB ODBC 代码路径',
+    localPathPlaceholder: '例：D:/GaussDB/openGauss-connector-odbc',
+    sourceFilePattern: /\.(c|h)$/i,
+    codeFence: 'c',
+    maxSearchDepth: 5,
+    promptExpert: '熟悉 psqlodbc 与 GaussDB ODBC 驱动代码',
+    promptTarget: '本地 GaussDB ODBC 仓库',
+  },
+  jdbc: {
+    id: 'jdbc',
+    name: 'GaussDB JDBC',
+    shortName: 'JDBC',
+    upstreamRepo: 'pgjdbc/pgjdbc',
+    upstreamLabel: 'pgjdbc 社区',
+    upstreamPathPrefix: '',
+    localPathKey: 'gaussdbJdbcPath',
+    envPathKey: 'GAUSSDB_JDBC_PATH',
+    localPathLabel: '本地 GaussDB JDBC 代码路径',
+    localPathPlaceholder: '例：D:/GaussDB/openGauss-connector-jdbc',
+    sourceFilePattern: /\.(java|kt|kts|gradle|xml|properties)$/i,
+    codeFence: 'java',
+    maxSearchDepth: 9,
+    promptExpert: '熟悉 pgjdbc 与 GaussDB JDBC 驱动代码',
+    promptTarget: '本地 GaussDB JDBC 仓库',
+  },
+  libpq: {
+    id: 'libpq',
+    name: 'GaussDB libpq',
+    shortName: 'libpq',
+    upstreamRepo: 'postgres/postgres',
+    upstreamLabel: 'PostgreSQL 官方 libpq',
+    upstreamPathPrefix: 'src/interfaces/libpq/',
+    localPathKey: 'gaussdbLibpqPath',
+    envPathKey: 'GAUSSDB_LIBPQ_PATH',
+    localPathLabel: '本地 GaussDB libpq 代码路径',
+    localPathPlaceholder: '例：D:/GaussDB/openGauss-server/src/common/interfaces/libpq',
+    sourceFilePattern: /\.(c|h)$/i,
+    codeFence: 'c',
+    maxSearchDepth: 6,
+    promptExpert: '熟悉 PostgreSQL libpq 与 GaussDB libpq 客户端代码',
+    promptTarget: '本地 GaussDB libpq 目录',
+  },
+};
+
+function normalizeProfileId(profileId) {
+  const id = String(profileId || '').toLowerCase();
+  return DRIVER_PROFILES[id] ? id : 'odbc';
+}
+
+function getProfile(profileId) {
+  return DRIVER_PROFILES[normalizeProfileId(profileId)];
+}
+
+function publicProfile(profile) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    shortName: profile.shortName,
+    upstreamRepo: profile.upstreamRepo,
+    upstreamLabel: profile.upstreamLabel,
+    upstreamPathPrefix: profile.upstreamPathPrefix,
+    localPathKey: profile.localPathKey,
+    localPathLabel: profile.localPathLabel,
+    localPathPlaceholder: profile.localPathPlaceholder,
+  };
+}
+
+function allPublicProfiles() {
+  return Object.values(DRIVER_PROFILES).map(publicProfile);
+}
 
 // ─── Settings ───────────────────────────────────────────────────────────────
 
@@ -213,7 +294,11 @@ function loadSettings() {
   const claudeDefaults = loadClaudeCodeDefaults();
   const settings = {
     // Defaults from env vars; saved settings win
+    driverProfile:    process.env.GAUSSDB_DRIVER_PROFILE || process.env.DRIVER_PROFILE || 'odbc',
     gaussdbOdbcPath:  process.env.GAUSSDB_ODBC_PATH || '',
+    gaussdbJdbcPath:  process.env.GAUSSDB_JDBC_PATH || '',
+    gaussdbLibpqPath: process.env.GAUSSDB_LIBPQ_PATH
+      || (process.env.GAUSSDB_SERVER_PATH ? join(process.env.GAUSSDB_SERVER_PATH, 'src', 'common', 'interfaces', 'libpq') : ''),
     aiProvider:       defaultAiProvider(),
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || claudeDefaults.anthropicBaseUrl || '',
     anthropicApiKey:  process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || claudeDefaults.anthropicApiKey || '',
@@ -225,6 +310,7 @@ function loadSettings() {
     proxy:            process.env.HTTPS_PROXY || process.env.HTTP_PROXY || claudeDefaults.proxy || '',
     ...saved,
   };
+  settings.driverProfile = normalizeProfileId(settings.driverProfile);
   settings.aiProvider = normalizeAiProvider(settings.aiProvider);
   return settings;
 }
@@ -235,12 +321,17 @@ function saveSettings(patch) {
     try { current = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')); } catch {}
   }
   const next = { ...current, ...patch };
+  if (next.driverProfile) next.driverProfile = normalizeProfileId(next.driverProfile);
   if (next.aiProvider) next.aiProvider = normalizeAiProvider(next.aiProvider);
   writeFileSync(SETTINGS_FILE, JSON.stringify(next, null, 2));
 }
 
+function localPathForProfile(settings, profile = getProfile(settings.driverProfile)) {
+  return settings[profile.localPathKey] || '';
+}
+
 function isConfigured(s) {
-  if (!s.gaussdbOdbcPath) return false;
+  if (!localPathForProfile(s)) return false;
   if (s.aiProvider === 'minimax') return !!s.minimaxApiKey;
   return !!s.anthropicApiKey;
 }
@@ -248,7 +339,11 @@ function isConfigured(s) {
 app.get('/api/settings', (req, res) => {
   const s = loadSettings();
   res.json({
+    profiles:         allPublicProfiles(),
+    driverProfile:    s.driverProfile,
     gaussdbOdbcPath:  s.gaussdbOdbcPath  || '',
+    gaussdbJdbcPath:  s.gaussdbJdbcPath  || '',
+    gaussdbLibpqPath: s.gaussdbLibpqPath || '',
     aiProvider:       s.aiProvider,
     anthropicBaseUrl: s.anthropicBaseUrl || '',
     anthropicModel:   s.anthropicModel   || 'claude-sonnet-4.6',
@@ -264,7 +359,7 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const allowed = [
-    'gaussdbOdbcPath', 'aiProvider',
+    'driverProfile', 'gaussdbOdbcPath', 'gaussdbJdbcPath', 'gaussdbLibpqPath', 'aiProvider',
     'anthropicApiKey', 'anthropicBaseUrl', 'anthropicModel',
     'minimaxApiKey', 'minimaxModel', 'minimaxBaseUrl',
     'githubToken', 'proxy',
@@ -273,7 +368,10 @@ app.post('/api/settings', (req, res) => {
   for (const key of allowed) {
     const val = req.body[key];
     // Only overwrite if value was explicitly sent and non-empty (except paths which can be empty string)
-    if (val !== undefined && (val !== '' || ['gaussdbOdbcPath','anthropicBaseUrl','proxy','minimaxBaseUrl'].includes(key))) {
+    if (val !== undefined && (val !== '' || [
+      'gaussdbOdbcPath', 'gaussdbJdbcPath', 'gaussdbLibpqPath',
+      'anthropicBaseUrl', 'proxy', 'minimaxBaseUrl',
+    ].includes(key))) {
       patch[key] = val;
     }
   }
@@ -372,10 +470,19 @@ async function githubFetch(url) {
   return fetch(url, opts);
 }
 
+function profileFromRequest(req) {
+  return getProfile(req.query.profile || req.body?.profile || loadSettings().driverProfile);
+}
+
+function dataFileForProfile(profile, name) {
+  return join(DATA_DIR, `${profile.id}_${name}`);
+}
+
 // ─── PR List ────────────────────────────────────────────────────────────────
 
 app.get('/api/prs', async (req, res) => {
-  const cacheFile = join(DATA_DIR, 'prs.json');
+  const profile = profileFromRequest(req);
+  const cacheFile = dataFileForProfile(profile, 'prs.json');
   if (existsSync(cacheFile) && !req.query.refresh) {
     return res.json(JSON.parse(readFileSync(cacheFile, 'utf8')));
   }
@@ -384,11 +491,11 @@ app.get('/api/prs', async (req, res) => {
     const merged = [];
     for (let page = 1; page <= pages; page++) {
       const r = await githubFetch(
-        `https://api.github.com/repos/postgresql-interfaces/psqlodbc/pulls?state=closed&per_page=100&sort=updated&direction=desc&page=${page}`
+        `https://api.github.com/repos/${profile.upstreamRepo}/pulls?state=closed&per_page=100&sort=updated&direction=desc&page=${page}`
       );
       const data = await r.json();
       if (!Array.isArray(data)) return res.status(502).json({ error: data.message || 'GitHub API error' });
-      merged.push(...data.filter(pr => pr.merged_at));
+      merged.push(...data.filter(pr => pr.merged_at).map(pr => ({ ...pr, trackerProfile: profile.id })));
       if (data.length < 100) break;
     }
     writeFileSync(cacheFile, JSON.stringify(merged, null, 2));
@@ -400,36 +507,73 @@ app.get('/api/prs', async (req, res) => {
 
 // ─── Local code search ──────────────────────────────────────────────────────
 
-function findFileInDir(dir, filename, depth = 0) {
-  if (depth > 4) return null;
+const SKIP_LOCAL_DIRS = new Set([
+  '.git', '.idea', '.vscode', 'node_modules', 'target', 'build', '.gradle',
+  'out', 'dist', 'coverage', '.mvn',
+]);
+
+function basenameCandidates(upstreamFilename, profile) {
+  const fname = basename(upstreamFilename);
+  const names = new Set([fname]);
+  if (profile.id === 'libpq' && fname.endsWith('.c')) {
+    names.add(fname.replace(/\.c$/i, '.cpp'));
+  }
+  return [...names];
+}
+
+function localRelativeCandidates(upstreamFilename, profile) {
+  const candidates = [];
+  if (profile.upstreamPathPrefix && upstreamFilename.startsWith(profile.upstreamPathPrefix)) {
+    const rel = upstreamFilename.slice(profile.upstreamPathPrefix.length);
+    candidates.push(rel);
+    if (profile.id === 'libpq' && rel.endsWith('.c')) candidates.push(rel.replace(/\.c$/i, '.cpp'));
+  }
+  return candidates;
+}
+
+function findFileInDir(dir, filenames, depth = 0, maxDepth = 5) {
+  if (depth > maxDepth) return null;
+  const wanted = new Set(Array.isArray(filenames) ? filenames : [filenames]);
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return null; }
   for (const e of entries) {
-    if (e.isFile() && e.name === filename) return join(dir, e.name);
+    if (e.isFile() && wanted.has(e.name)) return join(dir, e.name);
   }
   for (const e of entries) {
-    if (e.isDirectory()) {
-      const found = findFileInDir(join(dir, e.name), filename, depth + 1);
+    if (e.isDirectory() && !SKIP_LOCAL_DIRS.has(e.name)) {
+      const found = findFileInDir(join(dir, e.name), filenames, depth + 1, maxDepth);
       if (found) return found;
     }
   }
   return null;
 }
 
-function findGaussDBFile(upstreamFilename) {
+function findGaussDBFile(upstreamFilename, profile) {
   const s = loadSettings();
-  if (!s.gaussdbOdbcPath) return null;
-  const fname = basename(upstreamFilename);
-  const found = findFileInDir(s.gaussdbOdbcPath, fname);
+  const localRoot = localPathForProfile(s, profile);
+  if (!localRoot) return null;
+
+  for (const rel of localRelativeCandidates(upstreamFilename, profile)) {
+    const direct = join(localRoot, rel);
+    if (existsSync(direct)) return { path: direct, content: readFileSync(direct, 'utf8') };
+  }
+
+  const found = findFileInDir(localRoot, basenameCandidates(upstreamFilename, profile), 0, profile.maxSearchDepth);
   if (!found) return null;
   return { path: found, content: readFileSync(found, 'utf8') };
+}
+
+function isSourceFileForProfile(filename, profile) {
+  if (profile.upstreamPathPrefix && !filename.startsWith(profile.upstreamPathPrefix)) return false;
+  return profile.sourceFilePattern.test(filename);
 }
 
 // ─── Analyze ────────────────────────────────────────────────────────────────
 
 app.post('/api/analyze/:prNumber', async (req, res) => {
   const { prNumber } = req.params;
-  const cacheFile = join(DATA_DIR, `analysis_${prNumber}.json`);
+  const profile = profileFromRequest(req);
+  const cacheFile = dataFileForProfile(profile, `analysis_${prNumber}.json`);
   if (existsSync(cacheFile) && !req.query.force) {
     const cached = JSON.parse(readFileSync(cacheFile, 'utf8'));
     if (cached.analysisPromptVersion === ANALYSIS_PROMPT_VERSION) return res.json(cached);
@@ -437,16 +581,16 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
 
   try {
     const [prRes, filesRes] = await Promise.all([
-      githubFetch(`https://api.github.com/repos/postgresql-interfaces/psqlodbc/pulls/${prNumber}`),
-      githubFetch(`https://api.github.com/repos/postgresql-interfaces/psqlodbc/pulls/${prNumber}/files`),
+      githubFetch(`https://api.github.com/repos/${profile.upstreamRepo}/pulls/${prNumber}`),
+      githubFetch(`https://api.github.com/repos/${profile.upstreamRepo}/pulls/${prNumber}/files`),
     ]);
     const pr    = await prRes.json();
     const files = await filesRes.json();
     if (!Array.isArray(files)) throw new Error('无法获取 PR 文件列表');
 
-    const srcFiles     = files.filter(f => /\.(c|h)$/.test(f.filename)).slice(0, 6);
+    const srcFiles     = files.filter(f => isSourceFileForProfile(f.filename, profile)).slice(0, 8);
     const fileContexts = srcFiles.map(f => {
-      const local = findGaussDBFile(f.filename);
+      const local = findGaussDBFile(f.filename, profile);
       const patchInfo = parsePatch(f.patch || '');
       const localSignals = local ? buildLocalPatchSignals(local.content, patchInfo) : null;
       return {
@@ -461,18 +605,20 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
 
     if (fileContexts.length === 0) {
       const result = buildResult(prNumber, pr, files, [], {
-        summary: '此 PR 未修改 C/H 源文件，与驱动逻辑无关',
+        summary: `此 PR 未修改 ${profile.name} 关注的源文件，与当前 Profile 驱动逻辑无关`,
         bugType: '其他', riskLevel: 'NOT_APPLICABLE',
         fixStatus: 'NOT_PRESENT',
-        riskReason: '变更仅涉及构建脚本/文档/测试等非驱动核心代码',
+        riskReason: profile.upstreamPathPrefix
+          ? `变更文件不在上游路径 ${profile.upstreamPathPrefix} 下，或不是当前 Profile 关注的源文件类型`
+          : '变更仅涉及当前 Profile 不关注的构建脚本/文档/测试等文件',
         evidence: [],
         affectedFiles: [], recommendation: '无需处理', hasCorrespondingCode: false,
-      });
+      }, profile);
       writeFileSync(cacheFile, JSON.stringify(result, null, 2));
       return res.json(result);
     }
 
-    const prompt = buildPrompt(pr, prNumber, fileContexts);
+    const prompt = buildPrompt(pr, prNumber, fileContexts, profile);
     const rawText = await callAI(prompt);
 
     let analysis;
@@ -495,7 +641,7 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
     }
     analysis = normalizeAnalysis(analysis, fileContexts);
 
-    const result = buildResult(prNumber, pr, files, fileContexts, analysis);
+    const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile);
     writeFileSync(cacheFile, JSON.stringify(result, null, 2));
     res.json(result);
 
@@ -507,13 +653,14 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
 // ─── All analyses ────────────────────────────────────────────────────────────
 
 app.get('/api/analyses', (req, res) => {
+  const profile = profileFromRequest(req);
   const results = [];
   readdirSync(DATA_DIR)
-    .filter(f => f.startsWith('analysis_') && f.endsWith('.json'))
+    .filter(f => f.startsWith(`${profile.id}_analysis_`) && f.endsWith('.json'))
     .forEach(f => {
       try {
         const result = JSON.parse(readFileSync(join(DATA_DIR, f), 'utf8'));
-        if (result.analysisPromptVersion === ANALYSIS_PROMPT_VERSION) results.push(result);
+        if (result.analysisPromptVersion === ANALYSIS_PROMPT_VERSION && result.profile?.id === profile.id) results.push(result);
       } catch {}
     });
   res.json(results.sort((a, b) => new Date(b.analyzedAt) - new Date(a.analyzedAt)));
@@ -523,13 +670,20 @@ app.get('/api/analyses', (req, res) => {
 
 app.get('/api/debug', (req, res) => {
   const s = loadSettings();
+  const profile = getProfile(s.driverProfile);
   res.json({
+    driverProfile:   profile.id,
+    driverName:      profile.name,
+    upstreamRepo:    profile.upstreamRepo,
+    localPath:       localPathForProfile(s, profile) || '(未设置)',
     aiProvider:      s.aiProvider,
     model:           s.aiProvider === 'minimax' ? s.minimaxModel : s.anthropicModel,
     baseUrl:         s.aiProvider === 'minimax' ? s.minimaxBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com'),
     proxy:           s.proxy || '(无)',
     hasKey:          s.aiProvider === 'minimax' ? !!s.minimaxApiKey : !!s.anthropicApiKey,
     gaussdbOdbcPath: s.gaussdbOdbcPath || '(未设置)',
+    gaussdbJdbcPath: s.gaussdbJdbcPath || '(未设置)',
+    gaussdbLibpqPath: s.gaussdbLibpqPath || '(未设置)',
   });
 });
 
@@ -629,9 +783,9 @@ function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch
   return snippet.slice(0, 9000);
 }
 
-function buildPrompt(pr, prNumber, fileContexts) {
+function buildPrompt(pr, prNumber, fileContexts, profile) {
   return `/no_think
-你是资深数据库驱动开发工程师，熟悉 psqlodbc 与 GaussDB ODBC 驱动代码。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
+你是资深数据库驱动开发工程师，${profile.promptExpert}。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
 
 重要输出约束：
 - 只输出一个 JSON 对象。
@@ -639,7 +793,7 @@ function buildPrompt(pr, prNumber, fileContexts) {
 - 第一个字符必须是 {，最后一个字符必须是 }。
 
 ## 任务
-分析 psqlodbc 社区 PR #${prNumber}，判断本地 GaussDB ODBC 仓库是否：
+分析 ${profile.upstreamLabel} PR #${prNumber}，判断${profile.promptTarget}是否：
 1. 已经合入等价修复，不需要再改；
 2. 仍存在上游修复前的缺陷，需要同步；
 3. 本地无对应代码；
@@ -648,6 +802,8 @@ function buildPrompt(pr, prNumber, fileContexts) {
 必须基于给出的 GaussDB 本地代码片段和上游 diff 做证据判断。禁止只说“需要确认/建议检查”。如果本地代码已经包含上游新增的防护逻辑、边界检查、状态重置、unbind 例外等修复行为，应明确输出 ALREADY_FIXED 和 NOT_APPLICABLE。
 
 ## PR 信息
+- 上游仓库：${profile.upstreamRepo}
+- 当前驱动 Profile：${profile.name}
 - 标题：${pr.title}
 - 描述：${(pr.body || '无描述').slice(0, 600)}
 
@@ -675,7 +831,7 @@ ${JSON.stringify(f.localSignals || { found: false }, null, 2)}
 \`\`\`
 
 ${f.gaussdbSnippet
-  ? `**GaussDB 对应代码（${f.gaussdbPath}，左侧为本地行号）：**\n\`\`\`c\n${f.gaussdbSnippet}\n\`\`\``
+  ? `**GaussDB 对应代码（${f.gaussdbPath}，左侧为本地行号）：**\n\`\`\`${profile.codeFence}\n${f.gaussdbSnippet}\n\`\`\``
   : `**GaussDB 中未找到文件 ${f.upstreamFile}**`
 }
 `).join('\n---\n')}
@@ -685,7 +841,7 @@ ${f.gaussdbSnippet
 - 如果 GaussDB 本地代码已经有等价修复，riskLevel 必须是 "NOT_APPLICABLE"，recommendation 应说明“无需修改”，riskReason 必须引用本地文件/函数/行号附近的证据。
 - 如果 GaussDB 本地代码仍保留上游删除的旧逻辑，且缺少上游新增修复逻辑，fixStatus 用 "NEEDS_FIX"，riskLevel 按影响给 HIGH/MEDIUM/LOW。
 - 如果只找到文件但证据不足，fixStatus 用 "UNCLEAR"，riskLevel 用 "LOW" 或 "UNKNOWN"，recommendation 写明还缺少哪段代码证据。
-- bugType 只能从 ["内存安全","空指针","缓冲区溢出","逻辑错误","资源泄漏","数据绑定错误","事务状态错误","构建/测试","其他"] 中选一个，不能照抄整个候选列表。
+- bugType 只能从 ["内存安全","空指针","缓冲区溢出","逻辑错误","资源泄漏","数据绑定错误","事务状态错误","协议兼容","并发安全","构建/测试","其他"] 中选一个，不能照抄整个候选列表。
 - evidence 必须列出至少 2 条本地代码证据；如果没有对应代码，写空数组。
 - 不允许把 "A/B/C" 这种候选说明原样输出到任何字段中，必须选择单个枚举值。
 
@@ -788,7 +944,7 @@ function normalizeAnalysis(analysis, fileContexts) {
   const allowedRisk = new Set(['HIGH', 'MEDIUM', 'LOW', 'NOT_APPLICABLE', 'UNKNOWN']);
   const allowedBugTypes = new Set([
     '内存安全', '空指针', '缓冲区溢出', '逻辑错误', '资源泄漏',
-    '数据绑定错误', '事务状态错误', '构建/测试', '其他',
+    '数据绑定错误', '事务状态错误', '协议兼容', '并发安全', '构建/测试', '其他',
   ]);
   const hasLocalMatch = fileContexts.some(f => f.gaussdbPath);
 
@@ -820,7 +976,7 @@ function normalizeAnalysis(analysis, fileContexts) {
   return result;
 }
 
-function buildResult(prNumber, pr, files, fileContexts, analysis) {
+function buildResult(prNumber, pr, files, fileContexts, analysis, profile) {
   return {
     prNumber:     parseInt(prNumber),
     prTitle:      pr.title,
@@ -828,6 +984,7 @@ function buildResult(prNumber, pr, files, fileContexts, analysis) {
     mergedAt:     pr.merged_at,
     analyzedAt:   new Date().toISOString(),
     analysisPromptVersion: ANALYSIS_PROMPT_VERSION,
+    profile:       publicProfile(profile),
     changedFiles: files.map(f => f.filename),
     matchedFiles: fileContexts.filter(f => f.gaussdbPath).map(f => ({
       upstream: f.upstreamFile,
@@ -844,12 +1001,14 @@ const MAX_PORT_ATTEMPTS = process.env.PORT ? 1 : 20;
 function logStartup(port) {
   const s = loadSettings();
   const provider = s.aiProvider || 'anthropic';
+  const profile = getProfile(s.driverProfile);
   console.log(`GaussDB PR Tracker → http://localhost:${port}`);
+  console.log(`  Driver   : ${profile.name} (${profile.upstreamRepo})`);
   console.log(`  Provider : ${provider.toUpperCase()}`);
   console.log(`  Model    : ${provider === 'minimax' ? s.minimaxModel : s.anthropicModel}`);
   console.log(`  Base URL : ${provider === 'minimax' ? s.minimaxBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com')}`);
   console.log(`  Proxy    : ${s.proxy || '(无)'}`);
-  console.log(`  ODBC Path: ${s.gaussdbOdbcPath || '(未配置)'}`);
+  console.log(`  Code Path: ${localPathForProfile(s, profile) || '(未配置)'}`);
 }
 
 function startServer(port, remainingAttempts = MAX_PORT_ATTEMPTS) {

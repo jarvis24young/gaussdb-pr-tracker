@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GaussDB ODBC · PR 追踪分析平台</title>
+  <title>GaussDB 驱动 · PR 追踪分析平台</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     .risk-HIGH   { background:#fee2e2; color:#991b1b; border-color:#fca5a5; }
@@ -62,16 +62,26 @@
         </svg>
       </div>
       <div>
-        <h1 class="text-xl font-bold text-slate-800">GaussDB ODBC PR 追踪平台</h1>
+        <h1 class="text-xl font-bold text-slate-800">GaussDB 驱动 PR 追踪平台</h1>
         <p class="text-sm text-slate-500">首次使用，请完成以下配置</p>
       </div>
     </div>
 
     <form id="setup-form" class="space-y-5">
-      <!-- Local ODBC path -->
       <div>
         <label class="block text-sm font-medium text-slate-700 mb-1">
-          本地 GaussDB ODBC 代码路径
+          驱动类型
+          <span class="text-red-500">*</span>
+        </label>
+        <select id="s-profile" onchange="App.onSetupProfileChange()"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </select>
+        <p id="s-profile-hint" class="text-xs text-slate-400 mt-1">选择要追踪的上游驱动仓库</p>
+      </div>
+
+      <div>
+        <label id="s-path-label" class="block text-sm font-medium text-slate-700 mb-1">
+          本地 GaussDB 驱动代码路径
           <span class="text-red-500">*</span>
         </label>
         <input id="s-path" type="text"
@@ -198,11 +208,14 @@
         </svg>
       </div>
       <div>
-        <span class="font-bold text-base">GaussDB ODBC · PR 追踪分析平台</span>
-        <span class="ml-3 text-xs text-slate-400">基于 psqlodbc 社区 PR，自动识别本地代码风险</span>
+        <span id="app-title" class="font-bold text-base">GaussDB 驱动 · PR 追踪分析平台</span>
+        <span id="app-subtitle" class="ml-3 text-xs text-slate-400">基于上游社区 PR，自动识别本地代码风险</span>
       </div>
     </div>
     <div class="flex items-center gap-2">
+      <select id="header-profile" onchange="App.switchProfile(this.value)"
+              class="text-sm bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400">
+      </select>
       <button onclick="App.refreshPRs()"
               class="flex items-center gap-1.5 text-sm bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded-lg transition-colors">
         <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -419,7 +432,14 @@
     </div>
     <form id="settings-form" class="space-y-4">
       <div>
-        <label class="block text-sm font-medium text-slate-700 mb-1">本地 GaussDB ODBC 代码路径</label>
+        <label class="block text-sm font-medium text-slate-700 mb-1">驱动类型</label>
+        <select id="cfg-profile" onchange="App.onSettingsProfileChange()"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </select>
+        <p id="cfg-profile-hint" class="text-xs text-slate-400 mt-1">选择要追踪的上游驱动仓库</p>
+      </div>
+      <div>
+        <label id="cfg-path-label" class="block text-sm font-medium text-slate-700 mb-1">本地 GaussDB 驱动代码路径</label>
         <input id="cfg-path" type="text"
                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
       </div>
@@ -498,23 +518,48 @@
 </div>
 
 <script>
+const DEFAULT_PROFILES = [
+  {
+    id: 'odbc', name: 'GaussDB ODBC', upstreamRepo: 'postgresql-interfaces/psqlodbc',
+    upstreamLabel: 'psqlodbc 社区', localPathKey: 'gaussdbOdbcPath',
+    localPathLabel: '本地 GaussDB ODBC 代码路径',
+    localPathPlaceholder: '例：D:/GaussDB/openGauss-connector-odbc',
+  },
+  {
+    id: 'jdbc', name: 'GaussDB JDBC', upstreamRepo: 'pgjdbc/pgjdbc',
+    upstreamLabel: 'pgjdbc 社区', localPathKey: 'gaussdbJdbcPath',
+    localPathLabel: '本地 GaussDB JDBC 代码路径',
+    localPathPlaceholder: '例：D:/GaussDB/openGauss-connector-jdbc',
+  },
+  {
+    id: 'libpq', name: 'GaussDB libpq', upstreamRepo: 'postgres/postgres',
+    upstreamLabel: 'PostgreSQL 官方 libpq', localPathKey: 'gaussdbLibpqPath',
+    localPathLabel: '本地 GaussDB libpq 代码路径',
+    localPathPlaceholder: '例：D:/GaussDB/openGauss-server/src/common/interfaces/libpq',
+  },
+];
+
 // ──────────────────────────────────────────────────────────────
 //  App — state + all logic
 // ──────────────────────────────────────────────────────────────
 const App = {
   state: {
     prs:        [],
-    analyses:   {},   // keyed by prNumber
+    analyses:   {},   // keyed by prNumber inside current profile
     selected:   null, // prNumber currently open in detail panel
     filter:     'all',
     analyzing:  null, // prNumber being analyzed right now
     settings:   {},
+    profiles:   DEFAULT_PROFILES,
+    profile:    'odbc',
   },
 
   // ── init ──────────────────────────────────────────────────
   async init() {
     const s = await fetch('/api/settings').then(r => r.json()).catch(() => ({}));
     this.state.settings = s;
+    this.state.profiles = s.profiles?.length ? s.profiles : DEFAULT_PROFILES;
+    this.state.profile = s.driverProfile || 'odbc';
     this.applySettingsToForms(s);
     if (!s.configured) {
       await this.refreshClaudeCodeHint();
@@ -528,8 +573,80 @@ const App = {
     this.renderTable();
   },
 
+  profileById(profileId = this.state.profile) {
+    return this.state.profiles.find(p => p.id === profileId) || this.state.profiles[0] || DEFAULT_PROFILES[0];
+  },
+
+  pathForProfile(settings = this.state.settings, profileId = this.state.profile) {
+    const profile = this.profileById(profileId);
+    return settings?.[profile.localPathKey] || '';
+  },
+
+  renderProfileOptions(selectId, selectedId = this.state.profile) {
+    const el = document.getElementById(selectId);
+    if (!el) return;
+    el.innerHTML = this.state.profiles
+      .map(p => `<option value="${escHtml(p.id)}"${p.id === selectedId ? ' selected' : ''}>${escHtml(p.name)}</option>`)
+      .join('');
+  },
+
+  updateProfileLabels(profileId = this.state.profile, prefix = '') {
+    const profile = this.profileById(profileId);
+    const label = document.getElementById(`${prefix}path-label`);
+    const input = document.getElementById(`${prefix}path`);
+    const hint = document.getElementById(`${prefix}profile-hint`);
+    if (label) label.innerHTML = `${escHtml(profile.localPathLabel)}${prefix === 's-' ? ' <span class="text-red-500">*</span>' : ''}`;
+    if (input) input.placeholder = profile.localPathPlaceholder || '';
+    if (hint) hint.textContent = `上游：${profile.upstreamLabel || profile.upstreamRepo}（${profile.upstreamRepo}）`;
+  },
+
+  refreshProfileChrome() {
+    this.renderProfileOptions('header-profile', this.state.profile);
+    const profile = this.profileById();
+    const title = document.getElementById('app-title');
+    const subtitle = document.getElementById('app-subtitle');
+    if (title) title.textContent = `${profile.name} · PR 追踪分析平台`;
+    if (subtitle) subtitle.textContent = `基于 ${profile.upstreamLabel || profile.upstreamRepo} PR，自动识别本地代码风险`;
+  },
+
+  onSetupProfileChange() {
+    const profileId = document.getElementById('s-profile')?.value || 'odbc';
+    this.updateProfileLabels(profileId, 's-');
+    const pathEl = document.getElementById('s-path');
+    if (pathEl) pathEl.value = this.pathForProfile(this.state.settings, profileId);
+  },
+
+  onSettingsProfileChange() {
+    const profileId = document.getElementById('cfg-profile')?.value || 'odbc';
+    this.updateProfileLabels(profileId, 'cfg-');
+    const pathEl = document.getElementById('cfg-path');
+    if (pathEl) pathEl.value = this.pathForProfile(this.state.settings, profileId);
+  },
+
+  async switchProfile(profileId) {
+    if (!profileId || profileId === this.state.profile) return;
+    await fetch('/api/settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ driverProfile: profileId }),
+    });
+    this.state.profile = profileId;
+    this.state.selected = null;
+    this.state.analyzing = null;
+    this.state.prs = [];
+    this.state.analyses = {};
+    document.getElementById('detail-panel')?.classList.add('hidden');
+    this.refreshProfileChrome();
+    await Promise.all([this.loadPRs(), this.loadAnalyses()]);
+    this.renderStats();
+    this.renderTable();
+    this.showToast(`已切换到 ${this.profileById(profileId).name}`, 'success');
+  },
+
   applySettingsToForms(s) {
     this.state.settings = s || {};
+    this.state.profiles = s.profiles?.length ? s.profiles : this.state.profiles;
+    this.state.profile = s.driverProfile || this.state.profile || 'odbc';
     const setIfBlank = (id, value) => {
       const el = document.getElementById(id);
       if (el && value && !el.value) el.value = value;
@@ -539,7 +656,13 @@ const App = {
       if (el && value !== undefined && value !== null) el.value = value;
     };
 
-    setIfBlank('s-path', s.gaussdbOdbcPath);
+    this.renderProfileOptions('s-profile', this.state.profile);
+    this.renderProfileOptions('cfg-profile', this.state.profile);
+    this.refreshProfileChrome();
+    this.updateProfileLabels(this.state.profile, 's-');
+    this.updateProfileLabels(this.state.profile, 'cfg-');
+
+    setIfBlank('s-path', this.pathForProfile(s, this.state.profile));
     setValue('s-provider', s.aiProvider || 'anthropic');
     setValue('s-anthropic-baseurl', s.anthropicBaseUrl || '');
     setValue('s-anthropic-model', s.anthropicModel || 'MiniMax-M2.7');
@@ -547,7 +670,7 @@ const App = {
     setValue('s-minimax-baseurl', s.minimaxBaseUrl || 'https://api.minimax.chat/v1');
     setValue('s-proxy', s.proxy || '');
 
-    setValue('cfg-path', s.gaussdbOdbcPath || '');
+    setValue('cfg-path', this.pathForProfile(s, this.state.profile));
     setValue('cfg-provider', s.aiProvider || 'anthropic');
     setValue('cfg-baseurl', s.anthropicBaseUrl || '');
     setValue('cfg-model', s.anthropicModel || 'MiniMax-M2.7');
@@ -647,7 +770,9 @@ const App = {
 
   // ── Data loading ──────────────────────────────────────────
   async loadPRs(refresh = false) {
-    const url = '/api/prs' + (refresh ? '?refresh=1' : '');
+    const params = new URLSearchParams({ profile: this.state.profile });
+    if (refresh) params.set('refresh', '1');
+    const url = `/api/prs?${params.toString()}`;
     const icon = document.getElementById('refresh-icon');
     if (refresh) icon.classList.add('spin');
     try {
@@ -664,7 +789,8 @@ const App = {
   },
 
   async loadAnalyses() {
-    const data = await fetch('/api/analyses').then(r => r.json()).catch(() => []);
+    const params = new URLSearchParams({ profile: this.state.profile });
+    const data = await fetch(`/api/analyses?${params.toString()}`).then(r => r.json()).catch(() => []);
     data.forEach(a => { this.state.analyses[a.prNumber] = a; });
   },
 
@@ -682,7 +808,9 @@ const App = {
     this.showDetailLoading();
     this.renderTable(); // update action button
 
-    const res = await fetch(`/api/analyze/${prNumber}${force ? '?force=1' : ''}`, { method: 'POST' });
+    const params = new URLSearchParams({ profile: this.state.profile });
+    if (force) params.set('force', '1');
+    const res = await fetch(`/api/analyze/${encodeURIComponent(prNumber)}?${params.toString()}`, { method: 'POST' });
     const data = await res.json();
 
     this.state.analyzing = null;
@@ -759,10 +887,10 @@ const App = {
       const actionBtn = isAnalyzing
         ? `<div class="flex justify-center"><svg class="w-4 h-4 spin text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></div>`
         : a
-          ? `<button onclick="App.selectPR(${pr.number})" class="text-xs text-blue-600 hover:text-blue-800 font-medium">查看</button>`
-          : `<button onclick="App.analyze(${pr.number})" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-md transition-colors">分析</button>`;
+          ? `<button onclick="App.selectPR(${JSON.stringify(pr.number)})" class="text-xs text-blue-600 hover:text-blue-800 font-medium">查看</button>`
+          : `<button onclick="App.analyze(${JSON.stringify(pr.number)})" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-md transition-colors">分析</button>`;
 
-      return `<tr class="pr-row${isSelected ? ' selected' : ''}" onclick="App.clickRow(${pr.number}, ${!!a})">
+      return `<tr class="pr-row${isSelected ? ' selected' : ''}" onclick="App.clickRow(${JSON.stringify(pr.number)}, ${!!a})">
         <td class="px-4 py-3 text-slate-500 font-mono text-xs">#${pr.number}</td>
         <td class="px-4 py-3 text-slate-800 text-xs leading-snug max-w-xs">
           <div class="truncate" title="${escHtml(pr.title)}">${escHtml(pr.title)}</div>
@@ -932,13 +1060,16 @@ document.getElementById('setup-form').addEventListener('submit', async e => {
   e.preventDefault();
   const errEl = document.getElementById('setup-error');
   errEl.classList.add('hidden');
+  const profileId = document.getElementById('s-profile').value || 'odbc';
+  const profile = App.profileById(profileId);
   const provider = document.getElementById('s-provider').value;
   const body = {
-    gaussdbOdbcPath: document.getElementById('s-path').value.trim(),
+    driverProfile:    profileId,
     aiProvider:       provider,
     githubToken:      document.getElementById('s-github').value.trim(),
     proxy:            document.getElementById('s-proxy').value.trim(),
   };
+  body[profile.localPathKey] = document.getElementById('s-path').value.trim();
   if (provider === 'anthropic') {
     body.anthropicApiKey = document.getElementById('s-anthropic-key').value.trim();
     body.anthropicBaseUrl = document.getElementById('s-anthropic-baseurl').value.trim();
@@ -952,7 +1083,7 @@ document.getElementById('setup-form').addEventListener('submit', async e => {
   const hasProviderKey = provider === 'minimax'
     ? (!!body.minimaxApiKey || existing.hasMinimaxKey)
     : (!!body.anthropicApiKey || existing.hasAnthropicKey);
-  if (!body.gaussdbOdbcPath || !hasProviderKey) {
+  if (!body[profile.localPathKey] || !hasProviderKey) {
     errEl.textContent = '本地代码路径和 API Key 为必填项';
     errEl.classList.remove('hidden');
     return;
@@ -979,23 +1110,37 @@ function toggleProviderFields() {
 
 document.getElementById('settings-form').addEventListener('submit', async e => {
   e.preventDefault();
+  const profileId = document.getElementById('cfg-profile').value || 'odbc';
+  const profile = App.profileById(profileId);
   const provider = document.getElementById('cfg-provider').value;
+  const body = {
+    driverProfile:    profileId,
+    aiProvider:       provider,
+    anthropicApiKey:  document.getElementById('cfg-apikey').value.trim() || undefined,
+    anthropicBaseUrl: document.getElementById('cfg-baseurl').value.trim(),
+    anthropicModel:   document.getElementById('cfg-model').value.trim(),
+    minimaxApiKey:    document.getElementById('cfg-minimax-key').value.trim() || undefined,
+    minimaxModel:     document.getElementById('cfg-minimax-model').value.trim(),
+    minimaxBaseUrl:   document.getElementById('cfg-minimax-baseurl').value.trim(),
+    githubToken:      document.getElementById('cfg-github').value.trim() || undefined,
+    proxy:            document.getElementById('cfg-proxy').value.trim(),
+  };
+  body[profile.localPathKey] = document.getElementById('cfg-path').value.trim();
   await fetch('/api/settings', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      gaussdbOdbcPath:  document.getElementById('cfg-path').value.trim(),
-      aiProvider:       provider,
-      anthropicApiKey:  document.getElementById('cfg-apikey').value.trim() || undefined,
-      anthropicBaseUrl: document.getElementById('cfg-baseurl').value.trim(),
-      anthropicModel:   document.getElementById('cfg-model').value.trim(),
-      minimaxApiKey:    document.getElementById('cfg-minimax-key').value.trim() || undefined,
-      minimaxModel:     document.getElementById('cfg-minimax-model').value.trim(),
-      minimaxBaseUrl:   document.getElementById('cfg-minimax-baseurl').value.trim(),
-      githubToken:      document.getElementById('cfg-github').value.trim() || undefined,
-      proxy:            document.getElementById('cfg-proxy').value.trim(),
-    }),
+    body: JSON.stringify(body),
   });
   App.closeSettings();
+  const previousProfile = App.state.profile;
+  const s = await fetch('/api/settings').then(r => r.json());
+  if (profileId !== previousProfile) {
+    App.state.settings = s;
+    App.state.profiles = s.profiles?.length ? s.profiles : App.state.profiles;
+    App.state.profile = previousProfile;
+    await App.switchProfile(profileId);
+  } else {
+    App.applySettingsToForms(s);
+  }
   App.showToast('配置已保存', 'success');
 });
 

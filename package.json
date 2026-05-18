@@ -1,7 +1,7 @@
 {
   "name": "gaussdb-pr-tracker",
   "version": "1.0.0",
-  "description": "Track upstream psqlodbc PRs and analyze GaussDB ODBC impact",
+  "description": "Track upstream driver PRs and analyze GaussDB ODBC/JDBC/libpq impact",
   "type": "module",
   "scripts": {
     "start": "node server.js",
