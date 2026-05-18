@@ -17,7 +17,7 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 5;
+const ANALYSIS_PROMPT_VERSION = 6;
 const ANALYSIS_METHOD = 'SOURCE_CONFIRMED_DRIVER_SYNC';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -624,8 +624,12 @@ function isSourceFileForProfile(filename, profile) {
 }
 
 function isTestOrExampleFile(filename) {
-  return /(^|\/)(test|tests|testing|example|examples|docs?|ci)(\/|$)/i.test(filename)
-    || /(^|\/)([^/]*(test|spec)[^/]*)\.(c|h|cpp|cc|java|kt|kts)$/i.test(filename);
+  const normalized = String(filename || '').replace(/\\/g, '/');
+  if (/(^|\/)(test|tests|testing|example|examples|docs?|ci)(\/|$)/i.test(normalized)) return true;
+
+  const base = basename(normalized);
+  return /(^test[_-]|[_-]test$|\.test$|^spec[_-]|[_-]spec$|\.spec$)/i
+    .test(base.replace(/\.(c|h|cpp|cc|java|kt|kts|xml|properties|gradle)$/i, ''));
 }
 
 // ─── Analyze ────────────────────────────────────────────────────────────────
