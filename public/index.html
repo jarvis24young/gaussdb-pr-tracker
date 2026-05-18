@@ -208,8 +208,8 @@
         </svg>
       </div>
       <div>
-        <span id="app-title" class="font-bold text-base">GaussDB 驱动 · PR 追踪分析平台</span>
-        <span id="app-subtitle" class="ml-3 text-xs text-slate-400">基于上游社区 PR，自动识别本地代码风险</span>
+        <span id="app-title" class="font-bold text-base">GaussDB 驱动 PR 追踪分析平台</span>
+        <span id="app-subtitle" class="ml-3 text-xs text-slate-400">支持 ODBC / JDBC 上游 PR，自动识别本地代码风险</span>
       </div>
     </div>
     <div class="flex items-center gap-2">
@@ -629,11 +629,10 @@ const App = {
 
   refreshProfileChrome() {
     this.renderProfileOptions('header-profile', this.state.profile);
-    const profile = this.profileById();
     const title = document.getElementById('app-title');
     const subtitle = document.getElementById('app-subtitle');
-    if (title) title.textContent = `${profile.name} · PR 追踪分析平台`;
-    if (subtitle) subtitle.textContent = `基于 ${profile.upstreamLabel || profile.upstreamRepo} PR，自动识别本地代码风险`;
+    if (title) title.textContent = 'GaussDB 驱动 PR 追踪分析平台';
+    if (subtitle) subtitle.textContent = '支持 ODBC / JDBC 上游 PR，自动识别本地代码风险';
   },
 
   onSetupProfileChange() {
