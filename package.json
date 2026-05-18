@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test:analysis": "node scripts/analysis-selftest.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

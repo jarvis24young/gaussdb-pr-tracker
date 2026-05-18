@@ -19,6 +19,7 @@ GaussDB ODBC / JDBC 等驱动与上游 PostgreSQL 生态代码高度相似。上
 - 过滤明确的 test/docs/example 目录和测试命名文件，避免把测试缺失误判为产品代码风险，同时不误伤 `dlg_specific.c` 这类产品源码
 - 基于 patch 函数名和标识符抽取本地函数级上下文，减少大文件截断误判
 - 优先匹配上游新增/删除的精确代码行，区分“修复行已存在”和“旧逻辑仍存在”
+- 后端先执行规则预判，再让 AI 基于结构化证据解释结论，降低纯模型误判
 - 点击分析时自动启用 `SOURCE_CONFIRMED_DRIVER_SYNC` 驱动专家分析流程，按源码事实、调用链和等价修复比对输出结论
 - 调用 AI 分析上游修复与本地代码相似风险
 - 展示 HIGH / MEDIUM / LOW / N/A 风险等级
@@ -214,6 +215,7 @@ GAUSSDB_JDBC_PATH=D:/GaussDB/openGauss-connector-jdbc
 ```powershell
 npm run dev
 node --check server.js
+npm run test:analysis
 ```
 
 前端是单文件页面：`public/index.html`。后端入口是 `server.js`。

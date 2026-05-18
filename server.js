@@ -682,7 +682,8 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
       return res.json(result);
     }
 
-    const prompt = buildPrompt(pr, prNumber, fileContexts, profile);
+    const ruleBasedPreClassification = aggregateRuleBasedPreClassification(fileContexts);
+    const prompt = buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification);
     const rawText = await callAI(prompt);
 
     let analysis;
@@ -703,9 +704,9 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
         affectedFiles: [], recommendation: '', hasCorrespondingCode: false,
       };
     }
-    analysis = normalizeAnalysis(analysis, fileContexts);
+    analysis = normalizeAnalysis(analysis, fileContexts, ruleBasedPreClassification);
 
-    const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile);
+    const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification);
     writeFileSync(cacheFile, JSON.stringify(result, null, 2));
     res.json(result);
 
@@ -804,15 +805,32 @@ function meaningfulChangedLines(lines) {
   return lines
     .map(line => line.trim())
     .filter(line => line.length >= 8)
+    .filter(line => !line.startsWith('//'))
+    .filter(line => !line.startsWith('/*'))
+    .filter(line => !line.startsWith('*'))
+    .filter(line => !line.startsWith('#'))
     .filter(line => !/^[{}();]+$/.test(line))
     .slice(0, 30);
+}
+
+function extractPatchFacts(patchInfo) {
+  const addedAnchors = meaningfulChangedLines(patchInfo.addedLines).slice(0, 20);
+  const removedAnchors = meaningfulChangedLines(patchInfo.removedLines).slice(0, 20);
+  return {
+    changedFunctions: patchInfo.functionNames.slice(0, 12),
+    addedAnchors,
+    removedAnchors,
+    identifiers: patchInfo.identifiers.slice(0, 20),
+    hunkHeaders: patchInfo.hunkHeaders.slice(0, 8),
+  };
 }
 
 function buildLocalPatchSignals(localContent, patchInfo) {
   const localLines = String(localContent || '').split('\n');
   const normalizedLocal = normalizeCodeLine(localContent);
-  const added = meaningfulChangedLines(patchInfo.addedLines);
-  const removed = meaningfulChangedLines(patchInfo.removedLines);
+  const patchFacts = extractPatchFacts(patchInfo);
+  const added = patchFacts.addedAnchors;
+  const removed = patchFacts.removedAnchors;
   const addedPresent = added.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
   const removedPresent = removed.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
   const exactAddedMatches = findExactChangedLineMatches(localLines, added).slice(0, 12);
@@ -820,7 +838,16 @@ function buildLocalPatchSignals(localContent, patchInfo) {
   const functionNamePresence = Object.fromEntries(
     patchInfo.functionNames.slice(0, 12).map(name => [name, new RegExp(`\\b${escapeRegExp(name)}\\b`).test(localContent)])
   );
+  const preClassification = classifyLocalEvidence({
+    hasLocalFile: true,
+    exactAddedMatches,
+    exactRemovedMatches,
+    addedPresent,
+    removedPresent,
+    patchFacts,
+  });
   return {
+    patchFacts,
     addedLineCount: added.length,
     removedLineCount: removed.length,
     addedPresentCount: addedPresent.length,
@@ -830,6 +857,123 @@ function buildLocalPatchSignals(localContent, patchInfo) {
     exactAddedMatches,
     exactRemovedMatches,
     functionNamePresence,
+    preClassification,
+  };
+}
+
+function classifyLocalEvidence({ hasLocalFile, exactAddedMatches = [], exactRemovedMatches = [], addedPresent = [], removedPresent = [], patchFacts = {} }) {
+  if (!hasLocalFile) {
+    return {
+      fixStatus: 'NOT_PRESENT',
+      confidence: 'HIGH',
+      reason: '本地未找到对应产品源文件。',
+    };
+  }
+
+  const addedExact = exactAddedMatches.length;
+  const removedExact = exactRemovedMatches.length;
+  const addedAny = addedPresent.length;
+  const removedAny = removedPresent.length;
+  const addedAnchorTotal = patchFacts.addedAnchors?.length || 0;
+  const removedAnchorTotal = patchFacts.removedAnchors?.length || 0;
+
+  if (addedExact > 0 && removedExact === 0) {
+    return {
+      fixStatus: 'ALREADY_FIXED',
+      confidence: addedExact >= Math.min(2, Math.max(1, addedAnchorTotal)) ? 'HIGH' : 'MEDIUM',
+      reason: '本地精确命中上游新增修复代码行，且未精确命中上游删除的旧逻辑。',
+    };
+  }
+
+  if (removedExact > 0 && addedExact === 0) {
+    return {
+      fixStatus: 'NEEDS_FIX',
+      confidence: removedExact >= Math.min(2, Math.max(1, removedAnchorTotal)) ? 'HIGH' : 'MEDIUM',
+      reason: '本地精确命中上游删除的旧逻辑，且未精确命中上游新增修复代码行。',
+    };
+  }
+
+  if (addedExact > 0 && removedExact > 0) {
+    return {
+      fixStatus: 'UNCLEAR',
+      confidence: 'MEDIUM',
+      reason: '本地同时命中上游新增修复行和删除旧逻辑，可能存在部分合入或代码重构，需要结合函数上下文判断。',
+    };
+  }
+
+  if (addedAny > 0 && removedAny === 0) {
+    return {
+      fixStatus: 'ALREADY_FIXED',
+      confidence: 'MEDIUM',
+      reason: '本地归一化命中部分上游新增修复逻辑，未命中删除旧逻辑。',
+    };
+  }
+
+  if (removedAny > 0 && addedAny === 0) {
+    return {
+      fixStatus: 'NEEDS_FIX',
+      confidence: 'MEDIUM',
+      reason: '本地归一化命中部分上游删除旧逻辑，未命中新增修复逻辑。',
+    };
+  }
+
+  return {
+    fixStatus: 'UNCLEAR',
+    confidence: 'LOW',
+    reason: '未直接命中上游新增或删除的关键代码行，需要结合函数级上下文判断。',
+  };
+}
+
+function aggregateRuleBasedPreClassification(fileContexts) {
+  const matched = fileContexts.filter(f => f.gaussdbPath && f.localSignals?.preClassification);
+  if (matched.length === 0) {
+    return {
+      fixStatus: 'NOT_PRESENT',
+      confidence: 'HIGH',
+      reason: '未在本地仓库中找到对应产品源文件。',
+      evidence: [],
+    };
+  }
+
+  const evidence = [];
+  for (const f of matched) {
+    const signals = f.localSignals;
+    for (const item of signals.exactAddedMatches || []) {
+      evidence.push(`本地精确命中上游新增修复行：${f.gaussdbPath}:${item.line} ${item.code}`);
+    }
+    for (const item of signals.exactRemovedMatches || []) {
+      evidence.push(`本地精确命中上游删除旧逻辑：${f.gaussdbPath}:${item.line} ${item.code}`);
+    }
+  }
+
+  const needsFix = matched.find(f => f.localSignals.preClassification.fixStatus === 'NEEDS_FIX'
+    && ['HIGH', 'MEDIUM'].includes(f.localSignals.preClassification.confidence));
+  if (needsFix) {
+    return {
+      fixStatus: 'NEEDS_FIX',
+      confidence: needsFix.localSignals.preClassification.confidence,
+      reason: needsFix.localSignals.preClassification.reason,
+      evidence: evidence.slice(0, 8),
+    };
+  }
+
+  const alreadyFixed = matched.find(f => f.localSignals.preClassification.fixStatus === 'ALREADY_FIXED'
+    && ['HIGH', 'MEDIUM'].includes(f.localSignals.preClassification.confidence));
+  const hasNeedsExact = matched.some(f => (f.localSignals.exactRemovedMatches || []).length > 0);
+  if (alreadyFixed && !hasNeedsExact) {
+    return {
+      fixStatus: 'ALREADY_FIXED',
+      confidence: alreadyFixed.localSignals.preClassification.confidence,
+      reason: alreadyFixed.localSignals.preClassification.reason,
+      evidence: evidence.slice(0, 8),
+    };
+  }
+
+  return {
+    fixStatus: 'UNCLEAR',
+    confidence: 'LOW',
+    reason: '规则层未形成确定结论，需要结合函数级上下文和模型分析。',
+    evidence: evidence.slice(0, 8),
   };
 }
 
@@ -1026,7 +1170,7 @@ function driverSkillPrompt(profile) {
 当前 Profile：${profile.name}。请按该 Profile 的驱动语义分析，不要跨驱动猜测。`;
 }
 
-function buildPrompt(pr, prNumber, fileContexts, profile) {
+function buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification) {
   return `/no_think
 你是资深数据库驱动开发工程师，${profile.promptExpert}。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
 
@@ -1059,6 +1203,13 @@ ${driverSkillPrompt(profile)}
 - 当前驱动 Profile：${profile.name}
 - 标题：${pr.title}
 - 描述：${(pr.body || '无描述').slice(0, 600)}
+
+## 程序确定性初判
+这是后端基于上游新增/删除代码行和本地代码精确命中结果生成的规则初判。你必须优先参考它；如果要推翻，必须在本地函数级上下文中给出更强证据。
+
+\`\`\`json
+${JSON.stringify(ruleBasedPreClassification || {}, null, 2)}
+\`\`\`
 
 ## 变更文件分析
 ${fileContexts.map(f => `
@@ -1192,7 +1343,7 @@ function buildJsonRepairPrompt(rawText) {
 ${String(rawText || '').slice(0, 6000)}`;
 }
 
-function normalizeAnalysis(analysis, fileContexts) {
+function normalizeAnalysis(analysis, fileContexts, ruleBasedPreClassification = null) {
   const allowedFixStatus = new Set(['ALREADY_FIXED', 'NEEDS_FIX', 'NOT_PRESENT', 'UNCLEAR']);
   const allowedRisk = new Set(['HIGH', 'MEDIUM', 'LOW', 'NOT_APPLICABLE', 'UNKNOWN']);
   const allowedBugTypes = new Set([
@@ -1226,10 +1377,33 @@ function normalizeAnalysis(analysis, fileContexts) {
   if (!Array.isArray(result.evidence)) result.evidence = [];
   if (!Array.isArray(result.affectedFiles)) result.affectedFiles = [];
   result.hasCorrespondingCode = result.hasCorrespondingCode === true || (hasLocalMatch && result.fixStatus !== 'NOT_PRESENT');
+
+  if (ruleBasedPreClassification?.confidence === 'HIGH') {
+    if (ruleBasedPreClassification.fixStatus === 'ALREADY_FIXED') {
+      result.fixStatus = 'ALREADY_FIXED';
+      result.riskLevel = 'NOT_APPLICABLE';
+      result.hasCorrespondingCode = true;
+      result.riskReason = `规则层高置信判断本地已包含上游修复：${ruleBasedPreClassification.reason}`;
+      result.recommendation = '无需修改：本地精确命中上游新增修复代码行，且未命中对应旧逻辑。';
+      result.evidence = [
+        ...ruleBasedPreClassification.evidence,
+        ...result.evidence,
+      ].filter(Boolean).slice(0, 8);
+    } else if (ruleBasedPreClassification.fixStatus === 'NEEDS_FIX') {
+      result.fixStatus = 'NEEDS_FIX';
+      result.hasCorrespondingCode = true;
+      if (!['HIGH', 'MEDIUM', 'LOW'].includes(result.riskLevel)) result.riskLevel = 'HIGH';
+      result.riskReason = `规则层高置信判断本地仍包含上游删除的旧逻辑：${ruleBasedPreClassification.reason}`;
+      result.evidence = [
+        ...ruleBasedPreClassification.evidence,
+        ...result.evidence,
+      ].filter(Boolean).slice(0, 8);
+    }
+  }
   return result;
 }
 
-function buildResult(prNumber, pr, files, fileContexts, analysis, profile) {
+function buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification = null) {
   return {
     prNumber:     parseInt(prNumber),
     prTitle:      pr.title,
@@ -1238,6 +1412,7 @@ function buildResult(prNumber, pr, files, fileContexts, analysis, profile) {
     analyzedAt:   new Date().toISOString(),
     analysisPromptVersion: ANALYSIS_PROMPT_VERSION,
     analysisMethod: ANALYSIS_METHOD,
+    ruleBasedPreClassification,
     profile:       publicProfile(profile),
     changedFiles: files.map(f => f.filename),
     matchedFiles: fileContexts.filter(f => f.gaussdbPath).map(f => ({
@@ -1283,4 +1458,15 @@ function startServer(port, remainingAttempts = MAX_PORT_ATTEMPTS) {
   });
 }
 
-startServer(PORT);
+export const __test = {
+  parsePatch,
+  extractPatchFacts,
+  buildLocalPatchSignals,
+  aggregateRuleBasedPreClassification,
+  extractRelevantSnippet,
+  findFunctionDefinitionStart,
+};
+
+if (process.env.NODE_ENV !== 'test') {
+  startServer(PORT);
+}
