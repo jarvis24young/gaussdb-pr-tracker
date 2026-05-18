@@ -17,7 +17,7 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 6;
+const ANALYSIS_PROMPT_VERSION = 7;
 const ANALYSIS_METHOD = 'SOURCE_CONFIRMED_DRIVER_SYNC';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -809,11 +809,14 @@ function meaningfulChangedLines(lines) {
 }
 
 function buildLocalPatchSignals(localContent, patchInfo) {
+  const localLines = String(localContent || '').split('\n');
   const normalizedLocal = normalizeCodeLine(localContent);
   const added = meaningfulChangedLines(patchInfo.addedLines);
   const removed = meaningfulChangedLines(patchInfo.removedLines);
   const addedPresent = added.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
   const removedPresent = removed.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
+  const exactAddedMatches = findExactChangedLineMatches(localLines, added).slice(0, 12);
+  const exactRemovedMatches = findExactChangedLineMatches(localLines, removed).slice(0, 12);
   const functionNamePresence = Object.fromEntries(
     patchInfo.functionNames.slice(0, 12).map(name => [name, new RegExp(`\\b${escapeRegExp(name)}\\b`).test(localContent)])
   );
@@ -824,8 +827,27 @@ function buildLocalPatchSignals(localContent, patchInfo) {
     removedPresentCount: removedPresent.length,
     addedPresentSamples: addedPresent.slice(0, 8),
     removedPresentSamples: removedPresent.slice(0, 8),
+    exactAddedMatches,
+    exactRemovedMatches,
     functionNamePresence,
   };
+}
+
+function findExactChangedLineMatches(lines, changedLines) {
+  const normalizedChanged = changedLines
+    .map(line => ({ source: line, normalized: normalizeCodeLine(line) }))
+    .filter(item => item.normalized.length >= 8);
+  const matches = [];
+  lines.forEach((line, index) => {
+    const normalizedLocal = normalizeCodeLine(line);
+    if (!normalizedLocal) return;
+    for (const changed of normalizedChanged) {
+      if (normalizedLocal === changed.normalized) {
+        matches.push({ line: index + 1, code: line.trim(), patchLine: changed.source });
+      }
+    }
+  });
+  return matches;
 }
 
 function formatSnippetWithLineNumbers(lines, indexes) {
@@ -840,15 +862,13 @@ function escapeRegExp(value) {
 
 function findFunctionDefinitionStart(lines, name, aroundIndex = -1) {
   const escaped = escapeRegExp(name);
-  const defRe = new RegExp(`\\b${escaped}\\s*\\([^;]*$|\\b${escaped}\\s*\\([^;]*\\)\\s*\\{?\\s*$`);
   const candidates = [];
   lines.forEach((line, i) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return;
-    if (!line.includes(name) || !defRe.test(line)) return;
-    const joined = [lines[i], lines[i + 1] || '', lines[i + 2] || ''].join(' ');
-    if (!joined.includes('{')) return;
-    if (/;\s*$/.test(trimmed) && !joined.includes('{')) return;
+    if (!new RegExp(`\\b${escaped}\\s*\\(`).test(line)) return;
+    const signature = lines.slice(i, Math.min(lines.length, i + 12)).join(' ');
+    if (!new RegExp(`\\b${escaped}\\s*\\([^;]*\\)\\s*\\{`).test(signature)) return;
     candidates.push(i);
   });
   if (candidates.length === 0) return -1;
@@ -882,6 +902,31 @@ function sectionWithLineNumbers(title, lines, start, end) {
   return `// ${title}\n${formatSnippetWithLineNumbers(lines, indexes)}`;
 }
 
+function addExactMatchSections(sections, seenRanges, lines, patchInfo) {
+  const changedLines = [
+    ...meaningfulChangedLines(patchInfo.addedLines).map(code => ({ kind: 'added', code })),
+    ...meaningfulChangedLines(patchInfo.removedLines).map(code => ({ kind: 'removed', code })),
+  ];
+  if (changedLines.length === 0) return;
+
+  const normalizedChanged = changedLines
+    .map(item => ({ ...item, normalized: normalizeCodeLine(item.code) }))
+    .filter(item => item.normalized.length >= 8);
+
+  lines.forEach((line, i) => {
+    if (sections.length >= 8) return;
+    const normalizedLocal = normalizeCodeLine(line);
+    const hit = normalizedChanged.find(item => item.normalized === normalizedLocal);
+    if (!hit) return;
+    const start = Math.max(0, i - 25);
+    const end = Math.min(lines.length - 1, i + 45);
+    const rangeKey = `${start}:${end}`;
+    if (seenRanges.has(rangeKey)) return;
+    seenRanges.add(rangeKey);
+    sections.push(sectionWithLineNumbers(`local exact ${hit.kind} patch-line match near line ${i + 1}`, lines, start, end));
+  });
+}
+
 function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch)) {
   if (!fileContent) return null;
   if (!patch) return fileContent.split('\n').slice(0, 160).map((line, i) => `${String(i + 1).padStart(5, ' ')}: ${line}`).join('\n');
@@ -889,6 +934,8 @@ function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch
   const lines = fileContent.split('\n');
   const sections = [];
   const seenRanges = new Set();
+  addExactMatchSections(sections, seenRanges, lines, patchInfo);
+
   const functionNames = [
     ...patchInfo.functionNames,
     ...extractFunctionNamesFromText(patch),
@@ -1000,8 +1047,10 @@ function buildPrompt(pr, prNumber, fileContexts, profile) {
 ${driverSkillPrompt(profile)}
 
 重要判断边界：
+- 本地代码来自用户在页面或环境变量中配置的仓库路径；不要假设其他机器或示例路径中的代码状态。
 - 已过滤上游 test / docs / example 类文件，测试文件不存在不能作为 NEEDS_FIX 或 HIGH 风险证据。
 - GaussDB 对应代码是按 patch 标识符和函数名抽取的分段函数级上下文，不是文件全文；不得因为未展示测试文件或无关函数就提升风险等级。
+- 本地代码命中信号中的 exactAddedMatches / exactRemovedMatches 是最强证据：exactAddedMatches 表示上游新增修复行在本地已存在；exactRemovedMatches 表示上游删除旧逻辑仍在本地存在。
 - 如果本地上下文已经展示修复函数、调用点或等价校验逻辑，必须优先判断是否 ALREADY_FIXED。
 - 如果只缺测试文件，但运行时代码已经修复，应输出 ALREADY_FIXED；测试补充只能作为 recommendation 的附加建议，不能作为风险依据。
 

@@ -18,6 +18,7 @@ GaussDB ODBC / JDBC 等驱动与上游 PostgreSQL 生态代码高度相似。上
 - 按上游变更文件名匹配本地 GaussDB 驱动文件
 - 过滤明确的 test/docs/example 目录和测试命名文件，避免把测试缺失误判为产品代码风险，同时不误伤 `dlg_specific.c` 这类产品源码
 - 基于 patch 函数名和标识符抽取本地函数级上下文，减少大文件截断误判
+- 优先匹配上游新增/删除的精确代码行，区分“修复行已存在”和“旧逻辑仍存在”
 - 点击分析时自动启用 `SOURCE_CONFIRMED_DRIVER_SYNC` 驱动专家分析流程，按源码事实、调用链和等价修复比对输出结论
 - 调用 AI 分析上游修复与本地代码相似风险
 - 展示 HIGH / MEDIUM / LOW / N/A 风险等级
@@ -116,6 +117,8 @@ npm start
 - 当前驱动对应的本地代码路径
 - AI API Key
 - AI Base URL 和模型名。内网 MiniMax-M2.7 走 Anthropic 兼容接口时，模型名填 `MiniMax-M2.7`
+
+分析结果只以当前页面或 `.env` 配置的本地仓库路径为准。不同电脑上的 ODBC/JDBC 仓库内容可能不同，判断结论也会不同。
 
 GitHub Token 可选。未配置时也能拉取公开 PR，但容易遇到 GitHub API 低频率限制。建议配置 `GITHUB_TOKEN`，也兼容 `GH_TOKEN` 和 `GITHUB_AUTH_TOKEN`：
 
