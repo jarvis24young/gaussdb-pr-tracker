@@ -17,7 +17,7 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 3;
+const ANALYSIS_PROMPT_VERSION = 4;
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
 const DRIVER_PROFILES = {
@@ -556,7 +556,17 @@ app.get('/api/prs', async (req, res) => {
 
 const SKIP_LOCAL_DIRS = new Set([
   '.git', '.idea', '.vscode', 'node_modules', 'target', 'build', '.gradle',
-  'out', 'dist', 'coverage', '.mvn',
+  'out', 'dist', 'coverage', '.mvn', 'test', 'tests', 'testing',
+  'example', 'examples', 'doc', 'docs', 'ci',
+]);
+
+const COMMON_CALL_IGNORES = new Set([
+  'if', 'for', 'while', 'switch', 'return', 'sizeof', 'case', 'catch',
+  'new', 'throw', 'typeof', 'defined',
+  'printf', 'fprintf', 'snprintf', 'sprintf', 'sscanf', 'scanf',
+  'strlen', 'strcmp', 'strncmp', 'strcpy', 'strncpy', 'strcat', 'strncat',
+  'memcpy', 'memmove', 'memset', 'malloc', 'calloc', 'realloc', 'free',
+  'assert', 'sizeof', 'String', 'Integer', 'Long', 'Boolean', 'Objects',
 ]);
 
 function basenameCandidates(upstreamFilename, profile) {
@@ -608,7 +618,13 @@ function findGaussDBFile(upstreamFilename, profile) {
 
 function isSourceFileForProfile(filename, profile) {
   if (profile.upstreamPathPrefix && !filename.startsWith(profile.upstreamPathPrefix)) return false;
+  if (isTestOrExampleFile(filename)) return false;
   return profile.sourceFilePattern.test(filename);
+}
+
+function isTestOrExampleFile(filename) {
+  return /(^|\/)(test|tests|testing|example|examples|docs?|ci)(\/|$)/i.test(filename)
+    || /(^|\/)([^/]*(test|spec)[^/]*)\.(c|h|cpp|cc|java|kt|kts)$/i.test(filename);
 }
 
 // ─── Analyze ────────────────────────────────────────────────────────────────
@@ -732,7 +748,7 @@ app.get('/api/debug', (req, res) => {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function parsePatch(patch) {
-  const info = { addedLines: [], removedLines: [], identifiers: [], hunkHeaders: [] };
+  const info = { addedLines: [], removedLines: [], identifiers: [], functionNames: [], hunkHeaders: [] };
   if (!patch) return info;
 
   for (const line of patch.split('\n')) {
@@ -750,13 +766,25 @@ function parsePatch(patch) {
   const ignored = new Set([
     'if', 'else', 'for', 'while', 'return', 'sizeof', 'static', 'const',
     'char', 'int', 'long', 'short', 'void', 'NULL', 'TRUE', 'FALSE',
+    ...COMMON_CALL_IGNORES,
   ]);
   info.identifiers = [...new Set((identifierText.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) || [])
     .filter(token => !ignored.has(token))
     .filter(token => !/^PG[A-Z0-9_]*$/.test(token))
   )].slice(0, 40);
+  info.functionNames = extractFunctionNamesFromText(identifierText)
+    .filter(token => !ignored.has(token))
+    .filter(token => !/^PG[A-Z0-9_]*$/.test(token))
+    .slice(0, 20);
 
   return info;
+}
+
+function extractFunctionNamesFromText(text) {
+  return [...new Set((String(text || '').match(/\b[A-Za-z_][A-Za-z0-9_]*\s*\(/g) || [])
+    .map(item => item.replace(/\s*\($/, ''))
+    .filter(name => name.length >= 3 && !COMMON_CALL_IGNORES.has(name))
+  )];
 }
 
 function normalizeCodeLine(line) {
@@ -781,6 +809,9 @@ function buildLocalPatchSignals(localContent, patchInfo) {
   const removed = meaningfulChangedLines(patchInfo.removedLines);
   const addedPresent = added.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
   const removedPresent = removed.filter(line => normalizedLocal.includes(normalizeCodeLine(line)));
+  const functionNamePresence = Object.fromEntries(
+    patchInfo.functionNames.slice(0, 12).map(name => [name, new RegExp(`\\b${escapeRegExp(name)}\\b`).test(localContent)])
+  );
   return {
     addedLineCount: added.length,
     removedLineCount: removed.length,
@@ -788,6 +819,7 @@ function buildLocalPatchSignals(localContent, patchInfo) {
     removedPresentCount: removedPresent.length,
     addedPresentSamples: addedPresent.slice(0, 8),
     removedPresentSamples: removedPresent.slice(0, 8),
+    functionNamePresence,
   };
 }
 
@@ -797,32 +829,116 @@ function formatSnippetWithLineNumbers(lines, indexes) {
     .join('\n');
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findFunctionDefinitionStart(lines, name, aroundIndex = -1) {
+  const escaped = escapeRegExp(name);
+  const defRe = new RegExp(`\\b${escaped}\\s*\\([^;]*$|\\b${escaped}\\s*\\([^;]*\\)\\s*\\{?\\s*$`);
+  const candidates = [];
+  lines.forEach((line, i) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return;
+    if (!line.includes(name) || !defRe.test(line)) return;
+    const joined = [lines[i], lines[i + 1] || '', lines[i + 2] || ''].join(' ');
+    if (!joined.includes('{')) return;
+    if (/;\s*$/.test(trimmed) && !joined.includes('{')) return;
+    candidates.push(i);
+  });
+  if (candidates.length === 0) return -1;
+  if (aroundIndex < 0) return candidates[0];
+  return candidates.sort((a, b) => Math.abs(a - aroundIndex) - Math.abs(b - aroundIndex))[0];
+}
+
+function findFunctionEnd(lines, start) {
+  let depth = 0;
+  let seenBrace = false;
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    for (const ch of line) {
+      if (ch === '{') {
+        depth += 1;
+        seenBrace = true;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (seenBrace && depth <= 0) return i;
+      }
+    }
+  }
+  return Math.min(lines.length - 1, start + 120);
+}
+
+function sectionWithLineNumbers(title, lines, start, end) {
+  const safeStart = Math.max(0, start);
+  const safeEnd = Math.min(lines.length - 1, end);
+  const indexes = [];
+  for (let i = safeStart; i <= safeEnd; i++) indexes.push(i);
+  return `// ${title}\n${formatSnippetWithLineNumbers(lines, indexes)}`;
+}
+
 function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch)) {
   if (!fileContent) return null;
   if (!patch) return fileContent.split('\n').slice(0, 160).map((line, i) => `${String(i + 1).padStart(5, ' ')}: ${line}`).join('\n');
 
   const lines = fileContent.split('\n');
-  const relevant = new Set();
-  const identifiers = patchInfo.identifiers.slice(0, 25);
+  const sections = [];
+  const seenRanges = new Set();
+  const functionNames = [
+    ...patchInfo.functionNames,
+    ...extractFunctionNamesFromText(patch),
+  ].filter(Boolean);
+  const keyNames = [...new Set(functionNames)].slice(0, 12);
 
-  lines.forEach((line, i) => {
-    if (identifiers.some(token => line.includes(token))) {
-      for (let j = Math.max(0, i - 35); j < Math.min(lines.length, i + 90); j++) relevant.add(j);
+  for (const name of keyNames) {
+    const matchIndexes = [];
+    lines.forEach((line, i) => {
+      if (new RegExp(`\\b${escapeRegExp(name)}\\b`).test(line)) matchIndexes.push(i);
+    });
+    if (matchIndexes.length === 0) continue;
+
+    const defStart = findFunctionDefinitionStart(lines, name, matchIndexes[0]);
+    if (defStart >= 0) {
+      const defEnd = findFunctionEnd(lines, defStart);
+      const start = Math.max(0, defStart - 8);
+      const end = Math.min(lines.length - 1, defEnd + 8);
+      const rangeKey = `${start}:${end}`;
+      if (!seenRanges.has(rangeKey)) {
+        seenRanges.add(rangeKey);
+        sections.push(sectionWithLineNumbers(`local function context: ${name}`, lines, start, end));
+      }
+      continue;
     }
-  });
 
-  const functionLikeMatches = patch.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g) || [];
-  const functionNames = [...new Set(functionLikeMatches.map(m => m.replace(/\s*\($/, '')))].slice(0, 8);
-  lines.forEach((line, i) => {
-    if (functionNames.some(fn => line.includes(fn))) {
-      for (let j = Math.max(0, i - 35); j < Math.min(lines.length, i + 90); j++) relevant.add(j);
+    const first = matchIndexes[0];
+    const start = Math.max(0, first - 20);
+    const end = Math.min(lines.length - 1, first + 40);
+    const rangeKey = `${start}:${end}`;
+    if (!seenRanges.has(rangeKey)) {
+      seenRanges.add(rangeKey);
+      sections.push(sectionWithLineNumbers(`local identifier context: ${name}`, lines, start, end));
     }
-  });
+  }
 
-  const snippet = relevant.size > 10
-    ? formatSnippetWithLineNumbers(lines, relevant)
+  if (sections.length < 3) {
+    const identifiers = patchInfo.identifiers.slice(0, 20);
+    lines.forEach((line, i) => {
+      if (sections.length >= 6) return;
+      if (!identifiers.some(token => line.includes(token))) return;
+      const start = Math.max(0, i - 20);
+      const end = Math.min(lines.length - 1, i + 40);
+      const rangeKey = `${start}:${end}`;
+      if (!seenRanges.has(rangeKey)) {
+        seenRanges.add(rangeKey);
+        sections.push(sectionWithLineNumbers(`local patch-identifier context near line ${i + 1}`, lines, start, end));
+      }
+    });
+  }
+
+  const snippet = sections.length
+    ? sections.join('\n\n')
     : lines.slice(0, 180).map((line, i) => `${String(i + 1).padStart(5, ' ')}: ${line}`).join('\n');
-  return snippet.slice(0, 9000);
+  return snippet.slice(0, 14000);
 }
 
 function buildPrompt(pr, prNumber, fileContexts, profile) {
@@ -842,6 +958,12 @@ function buildPrompt(pr, prNumber, fileContexts, profile) {
 4. 证据不足，无法判断。
 
 必须基于给出的 GaussDB 本地代码片段和上游 diff 做证据判断。禁止只说“需要确认/建议检查”。如果本地代码已经包含上游新增的防护逻辑、边界检查、状态重置、unbind 例外等修复行为，应明确输出 ALREADY_FIXED 和 NOT_APPLICABLE。
+
+重要判断边界：
+- 已过滤上游 test / docs / example 类文件，测试文件不存在不能作为 NEEDS_FIX 或 HIGH 风险证据。
+- GaussDB 对应代码是按 patch 标识符和函数名抽取的分段函数级上下文，不是文件全文；不得因为未展示测试文件或无关函数就提升风险等级。
+- 如果本地上下文已经展示修复函数、调用点或等价校验逻辑，必须优先判断是否 ALREADY_FIXED。
+- 如果只缺测试文件，但运行时代码已经修复，应输出 ALREADY_FIXED；测试补充只能作为 recommendation 的附加建议，不能作为风险依据。
 
 ## PR 信息
 - 上游仓库：${profile.upstreamRepo}
@@ -873,7 +995,7 @@ ${JSON.stringify(f.localSignals || { found: false }, null, 2)}
 \`\`\`
 
 ${f.gaussdbSnippet
-  ? `**GaussDB 对应代码（${f.gaussdbPath}，左侧为本地行号）：**\n\`\`\`${profile.codeFence}\n${f.gaussdbSnippet}\n\`\`\``
+  ? `**GaussDB 对应代码（${f.gaussdbPath}，左侧为本地行号；按相关函数/标识符分段抽取）：**\n\`\`\`${profile.codeFence}\n${f.gaussdbSnippet}\n\`\`\``
   : `**GaussDB 中未找到文件 ${f.upstreamFile}**`
 }
 `).join('\n---\n')}
