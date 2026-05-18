@@ -17,7 +17,7 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 7;
+const ANALYSIS_PROMPT_VERSION = 8;
 const ANALYSIS_METHOD = 'SOURCE_CONFIRMED_DRIVER_SYNC';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -683,6 +683,13 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
     }
 
     const ruleBasedPreClassification = aggregateRuleBasedPreClassification(fileContexts);
+    if (isHighConfidenceRule(ruleBasedPreClassification)) {
+      const analysis = buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification);
+      const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification);
+      writeFileSync(cacheFile, JSON.stringify(result, null, 2));
+      return res.json(result);
+    }
+
     const prompt = buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification);
     const rawText = await callAI(prompt);
 
@@ -1403,6 +1410,104 @@ function normalizeAnalysis(analysis, fileContexts, ruleBasedPreClassification = 
   return result;
 }
 
+function isHighConfidenceRule(ruleBasedPreClassification) {
+  return ruleBasedPreClassification?.confidence === 'HIGH'
+    && ['ALREADY_FIXED', 'NEEDS_FIX', 'NOT_PRESENT'].includes(ruleBasedPreClassification.fixStatus);
+}
+
+function inferBugProfileFromPr(pr, fileContexts) {
+  const text = [
+    pr?.title,
+    pr?.body,
+    ...fileContexts.flatMap(f => [
+      f.upstreamFile,
+      ...(f.localSignals?.patchFacts?.addedAnchors || []),
+      ...(f.localSignals?.patchFacts?.removedAnchors || []),
+    ]),
+  ].filter(Boolean).join('\n').toLowerCase();
+
+  if (/(overflow|overrun|buffer|realloc|memcpy|strcpy|strlen|terminator|ubsan|use-after-free|double free|free\()/i.test(text)) {
+    return { bugType: '内存安全', riskLevel: 'HIGH' };
+  }
+  if (/(sql_desc|descriptor|bind|unbind|ard|ird|octet|precision|scale|buffer length)/i.test(text)) {
+    return { bugType: '数据绑定错误', riskLevel: 'MEDIUM' };
+  }
+  if (/(transaction|rollback|savepoint|commit|autocommit|autosave)/i.test(text)) {
+    return { bugType: '事务状态错误', riskLevel: 'MEDIUM' };
+  }
+  if (/(protocol|packet|sync|readyforquery|libpq|wire)/i.test(text)) {
+    return { bugType: '协议兼容', riskLevel: 'MEDIUM' };
+  }
+  if (/(leak|close|free|release|resource|handle)/i.test(text)) {
+    return { bugType: '资源泄漏', riskLevel: 'MEDIUM' };
+  }
+  return { bugType: '其他', riskLevel: 'MEDIUM' };
+}
+
+function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification) {
+  const { bugType, riskLevel } = inferBugProfileFromPr(pr, fileContexts);
+  const affectedFiles = fileContexts
+    .filter(f => f.gaussdbPath)
+    .map(f => f.gaussdbPath);
+  const evidence = (ruleBasedPreClassification.evidence || [])
+    .filter(Boolean)
+    .slice(0, 8);
+  if (evidence.length === 0 && ruleBasedPreClassification.reason) {
+    evidence.push(`规则层证据：${ruleBasedPreClassification.reason}`);
+  }
+
+  const addedAnchors = fileContexts
+    .flatMap(f => f.localSignals?.patchFacts?.addedAnchors || [])
+    .filter(Boolean)
+    .slice(0, 4);
+
+  if (ruleBasedPreClassification.fixStatus === 'ALREADY_FIXED') {
+    return {
+      summary: `上游 PR 修复“${pr.title}”，本地已精确命中上游新增修复代码行。`,
+      fixStatus: 'ALREADY_FIXED',
+      bugType,
+      riskLevel: 'NOT_APPLICABLE',
+      riskReason: `规则层高置信判断本地已包含上游修复：${ruleBasedPreClassification.reason}`,
+      evidence,
+      affectedFiles,
+      recommendation: '无需修改：本地已命中上游新增修复代码行，且未命中对应旧逻辑。',
+      hasCorrespondingCode: affectedFiles.length > 0,
+      analysisSource: 'rule-based',
+    };
+  }
+
+  if (ruleBasedPreClassification.fixStatus === 'NEEDS_FIX') {
+    const repairHint = addedAnchors.length > 0
+      ? `建议同步上游新增修复逻辑，重点核对：${addedAnchors.join('；')}`
+      : '建议同步上游新增修复逻辑，并优先处理证据中列出的本地文件和行号。';
+    return {
+      summary: `上游 PR 修复“${pr.title}”，本地仍精确命中上游删除的旧逻辑。`,
+      fixStatus: 'NEEDS_FIX',
+      bugType,
+      riskLevel,
+      riskReason: `规则层高置信判断本地仍包含上游删除的旧逻辑：${ruleBasedPreClassification.reason}`,
+      evidence,
+      affectedFiles,
+      recommendation: repairHint,
+      hasCorrespondingCode: affectedFiles.length > 0,
+      analysisSource: 'rule-based',
+    };
+  }
+
+  return {
+    summary: `上游 PR “${pr.title}” 在本地未找到对应产品代码。`,
+    fixStatus: 'NOT_PRESENT',
+    bugType: '其他',
+    riskLevel: 'NOT_APPLICABLE',
+    riskReason: ruleBasedPreClassification.reason || '本地未找到对应产品源文件。',
+    evidence: [],
+    affectedFiles: [],
+    recommendation: '无需处理当前 Profile 的产品代码。',
+    hasCorrespondingCode: false,
+    analysisSource: 'rule-based',
+  };
+}
+
 function buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification = null) {
   return {
     prNumber:     parseInt(prNumber),
@@ -1463,6 +1568,8 @@ export const __test = {
   extractPatchFacts,
   buildLocalPatchSignals,
   aggregateRuleBasedPreClassification,
+  buildRuleBasedAnalysis,
+  isHighConfidenceRule,
   extractRelevantSnippet,
   findFunctionDefinitionStart,
 };

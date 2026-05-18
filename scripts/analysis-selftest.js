@@ -71,6 +71,17 @@ const oldAggregate = __test.aggregateRuleBasedPreClassification([
 ]);
 assert(oldAggregate.fixStatus === 'NEEDS_FIX', 'old local code should aggregate as NEEDS_FIX');
 assert(oldAggregate.confidence === 'HIGH', 'old aggregate should be high confidence');
+assert(__test.isHighConfidenceRule(oldAggregate), 'old aggregate should skip AI by rule');
+
+const ruleOnlyAnalysis = __test.buildRuleBasedAnalysis(
+  { title: 'SQL_C_BINARY data buffer uses NULL terminator, but realloc() may be missed' },
+  [{ gaussdbPath: 'convert.c', localSignals: oldSignals }],
+  oldAggregate
+);
+assert(ruleOnlyAnalysis.analysisSource === 'rule-based', 'high-confidence rule analysis should be marked rule-based');
+assert(ruleOnlyAnalysis.fixStatus === 'NEEDS_FIX', 'rule-only analysis should preserve NEEDS_FIX');
+assert(ruleOnlyAnalysis.summary.includes('SQL_C_BINARY'), 'rule-only analysis should include a useful summary');
+assert(ruleOnlyAnalysis.recommendation, 'rule-only analysis should include a recommendation');
 
 const functionStart = __test.findFunctionDefinitionStart(fixedLocal.split('\n'), 'setup_getdataclass');
 assert(functionStart >= 0, 'multi-line C function signature should be detected');

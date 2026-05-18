@@ -391,6 +391,8 @@ pgdc->ttlbuflen = needbuflen;
 
 工具会先给出 `ALREADY_FIXED` 的规则证据，再让 AI 解释该结论。反之，如果本地仍精确命中旧逻辑且没有命中新修复行，会优先判定为 `NEEDS_FIX`。
 
+当规则层已经形成高置信结论时，后端直接返回确定性分析结果，不再调用 AI。这类结果会带有 `analysisSource=rule-based`，可减少内网模型排队、并发限制、JSON 解析失败导致的慢请求和空字段问题。AI 主要用于规则证据不足、存在重构或只命中部分上下文的场景。
+
 ### 8.4 Prompt 输入内容
 
 AI Prompt 中包含：

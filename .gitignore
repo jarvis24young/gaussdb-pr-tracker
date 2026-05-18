@@ -12,3 +12,4 @@ data/analysis_*.json
 data/prs.json
 data/*_analysis_*.json
 data/*_prs.json
+data/*.log
