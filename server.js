@@ -17,7 +17,8 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 4;
+const ANALYSIS_PROMPT_VERSION = 5;
+const ANALYSIS_METHOD = 'SOURCE_CONFIRMED_DRIVER_SYNC';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
 const DRIVER_PROFILES = {
@@ -941,6 +942,39 @@ function extractRelevantSnippet(fileContent, patch, patchInfo = parsePatch(patch
   return snippet.slice(0, 14000);
 }
 
+function driverSkillPrompt(profile) {
+  return `
+## 自动启用的驱动专家分析方法：${ANALYSIS_METHOD}
+
+点击“分析”时必须按下面流程执行。这是内置的数据库驱动源码确认流程，相当于自动调用驱动分析技能，但不依赖外部 Codex skill 运行时。
+
+1. 先识别上游 PR 的真实修复点：
+   - 找出新增的防护逻辑、删除的旧逻辑、改动函数、直接 callee、关键条件判断。
+   - 区分产品运行时代码与 test/docs/example 变更。测试文件缺失不能单独构成产品风险。
+
+2. 再确认本地源码事实：
+   - 只把给出的 GaussDB 本地代码片段、函数名、变量名、行号、命中信号当作事实。
+   - 如果本地片段展示了修复函数和调用点，要围绕这些事实判断是否等价修复。
+   - 如果本地片段仅缺少无关上下文，不得直接推断 NEEDS_FIX。
+
+3. 建立最小调用链/数据流：
+   - 对连接参数、URL/DSN、协议、描述符、结果集、类型转换、内存边界等驱动场景，说明问题从哪个公开入口或内部函数进入。
+   - 判断上游修复点在本地是否仍可通过相同路径触发。
+   - 如果调用链无法从给定片段确认，fixStatus 用 UNCLEAR，不要输出 HIGH，除非已有明确旧逻辑证据。
+
+4. 做等价修复比对：
+   - 如果本地存在上游新增校验、边界检查、状态恢复、资源释放、异常处理、协议兼容逻辑，且调用点也存在，优先输出 ALREADY_FIXED。
+   - 如果本地仍保留上游删除的旧逻辑，并缺少新增修复逻辑，才输出 NEEDS_FIX。
+   - 如果本地没有对应产品代码，输出 NOT_PRESENT。
+
+5. 输出证据要求：
+   - riskReason 和 evidence 必须引用本地文件、函数、变量、行号或具体代码行为。
+   - 不要把“测试文件不存在”“未展示全文”“建议人工确认”作为 HIGH 风险依据。
+   - 证据不足时输出 UNCLEAR/UNKNOWN，并写明缺少哪个最小函数或调用点。
+
+当前 Profile：${profile.name}。请按该 Profile 的驱动语义分析，不要跨驱动猜测。`;
+}
+
 function buildPrompt(pr, prNumber, fileContexts, profile) {
   return `/no_think
 你是资深数据库驱动开发工程师，${profile.promptExpert}。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
@@ -958,6 +992,8 @@ function buildPrompt(pr, prNumber, fileContexts, profile) {
 4. 证据不足，无法判断。
 
 必须基于给出的 GaussDB 本地代码片段和上游 diff 做证据判断。禁止只说“需要确认/建议检查”。如果本地代码已经包含上游新增的防护逻辑、边界检查、状态重置、unbind 例外等修复行为，应明确输出 ALREADY_FIXED 和 NOT_APPLICABLE。
+
+${driverSkillPrompt(profile)}
 
 重要判断边界：
 - 已过滤上游 test / docs / example 类文件，测试文件不存在不能作为 NEEDS_FIX 或 HIGH 风险证据。
@@ -1148,6 +1184,7 @@ function buildResult(prNumber, pr, files, fileContexts, analysis, profile) {
     mergedAt:     pr.merged_at,
     analyzedAt:   new Date().toISOString(),
     analysisPromptVersion: ANALYSIS_PROMPT_VERSION,
+    analysisMethod: ANALYSIS_METHOD,
     profile:       publicProfile(profile),
     changedFiles: files.map(f => f.filename),
     matchedFiles: fileContexts.filter(f => f.gaussdbPath).map(f => ({
