@@ -183,6 +183,13 @@ GITHUB_PR_PAGES=5
 
 每页 100 个 closed PR，后端会过滤出已 merge PR。
 
+内网 AI 网关出现 429 并发限制时，保持默认串行调用即可：
+
+```env
+AI_MAX_CONCURRENCY=1
+AI_RETRY_ATTEMPTS=3
+```
+
 切换默认驱动 Profile：
 
 ```env

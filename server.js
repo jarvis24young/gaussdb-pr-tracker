@@ -387,7 +387,74 @@ app.post('/api/import-claude-code-config', (req, res) => {
 
 // ─── AI abstraction layer ───────────────────────────────────────────────────
 
+const AI_MAX_CONCURRENCY = Math.max(1, Math.min(parseInt(process.env.AI_MAX_CONCURRENCY || '1', 10) || 1, 4));
+const AI_RETRY_ATTEMPTS = Math.max(1, Math.min(parseInt(process.env.AI_RETRY_ATTEMPTS || '3', 10) || 3, 5));
+let activeAiCalls = 0;
+const aiQueue = [];
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function releaseAiSlot() {
+  activeAiCalls = Math.max(0, activeAiCalls - 1);
+  const next = aiQueue.shift();
+  if (next) next();
+}
+
+async function runInAiQueue(task) {
+  if (activeAiCalls >= AI_MAX_CONCURRENCY) {
+    await new Promise(resolve => aiQueue.push(resolve));
+  }
+  activeAiCalls += 1;
+  try {
+    return await task();
+  } finally {
+    releaseAiSlot();
+  }
+}
+
+function aiErrorMessage(err) {
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  const parts = [
+    err.message,
+    err.status ? `status=${err.status}` : '',
+    err.code ? `code=${err.code}` : '',
+    err.type ? `type=${err.type}` : '',
+  ].filter(Boolean);
+  return parts.join(' ');
+}
+
+function isAiRateLimitError(err) {
+  const msg = aiErrorMessage(err).toLowerCase();
+  return /(^|\D)429(\D|$)/.test(msg)
+    || msg.includes('concurrency')
+    || msg.includes('rate limit')
+    || msg.includes('too many requests');
+}
+
 async function callAI(prompt) {
+  return runInAiQueue(() => callAIWithRetry(prompt));
+}
+
+async function callAIWithRetry(prompt) {
+  let lastErr;
+  for (let attempt = 1; attempt <= AI_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await callAIOnce(prompt);
+    } catch (err) {
+      lastErr = err;
+      if (!isAiRateLimitError(err) || attempt === AI_RETRY_ATTEMPTS) break;
+      const delayMs = Math.min(20000, 1500 * attempt * attempt);
+      console.warn(`AI rate/concurrency limit hit, retrying in ${delayMs}ms (${attempt}/${AI_RETRY_ATTEMPTS})`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastErr;
+}
+
+async function callAIOnce(prompt) {
   const s = loadSettings();
   if (s.aiProvider === 'minimax') return callMiniMax(prompt, s);
   return callAnthropic(prompt, s);

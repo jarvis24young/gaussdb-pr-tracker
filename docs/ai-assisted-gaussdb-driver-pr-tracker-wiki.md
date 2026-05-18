@@ -124,6 +124,7 @@ GaussDB 驱动与上游 PostgreSQL 驱动高度相似，但并不总是一比一
 - ClaudeCode 已有配置迁移。
 - GitHub Token 配置。
 - 端口占用自动切换。
+- AI 网关并发限制和 429 退避重试。
 - AI JSON 输出不稳定的修复链路。
 
 ### 3.4 敏感信息不能泄露

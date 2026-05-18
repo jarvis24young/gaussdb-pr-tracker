@@ -376,6 +376,18 @@
           <div class="text-xs text-red-600" id="dp-error-msg"></div>
         </div>
 
+        <!-- Pending state -->
+        <div id="dp-pending" class="hidden bg-slate-50 border border-slate-200 rounded-xl p-4">
+          <div class="text-sm font-medium text-slate-700 mb-1">尚未分析</div>
+          <div class="text-xs text-slate-500 leading-relaxed mb-3">
+            点击下方按钮分析该 PR，或在左侧勾选多个 PR 后使用“分析选中”。
+          </div>
+          <button id="dp-analyze-btn" onclick="App.analyze(App.state.selected)"
+                  class="w-full text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white py-2 rounded-lg transition-colors">
+            分析该 PR
+          </button>
+        </div>
+
         <!-- Analysis result -->
         <div id="dp-result" class="hidden space-y-4 fade-in">
 
@@ -826,6 +838,11 @@ const App = {
 
   // ── Analyze one PR ───────────────────────────────────────
   async analyze(prNumber, force = false) {
+    if (!prNumber) return false;
+    if (this.state.analyzing && this.state.analyzing !== prNumber) {
+      this.showToast(`PR #${this.state.analyzing} 正在分析中，请等待完成`, 'info');
+      return false;
+    }
     this.state.analyzing = prNumber;
     this.state.selected  = prNumber;
     this.showDetailPanel(prNumber);
@@ -1049,7 +1066,10 @@ const App = {
     if (hasAnalysis) {
       this.selectPR(prNumber);
     } else {
-      this.analyze(prNumber);
+      this.state.selected = prNumber;
+      this.renderTable();
+      this.showDetailPanel(prNumber);
+      this.showDetailPending(prNumber);
     }
   },
 
@@ -1075,20 +1095,32 @@ const App = {
 
   showDetailLoading() {
     document.getElementById('dp-loading').classList.remove('hidden');
+    document.getElementById('dp-pending').classList.add('hidden');
     document.getElementById('dp-result').classList.add('hidden');
     document.getElementById('dp-error').classList.add('hidden');
   },
 
   showDetailError(msg) {
     document.getElementById('dp-loading').classList.add('hidden');
+    document.getElementById('dp-pending').classList.add('hidden');
     document.getElementById('dp-result').classList.add('hidden');
     document.getElementById('dp-error').classList.remove('hidden');
     document.getElementById('dp-error-msg').textContent = msg;
   },
 
+  showDetailPending(prNumber) {
+    document.getElementById('dp-loading').classList.add('hidden');
+    document.getElementById('dp-error').classList.add('hidden');
+    document.getElementById('dp-result').classList.add('hidden');
+    document.getElementById('dp-pending').classList.remove('hidden');
+    const btn = document.getElementById('dp-analyze-btn');
+    if (btn) btn.disabled = this.state.batchRunning || this.state.analyzing === prNumber;
+  },
+
   showDetailResult(a) {
     document.getElementById('dp-loading').classList.add('hidden');
     document.getElementById('dp-error').classList.add('hidden');
+    document.getElementById('dp-pending').classList.add('hidden');
     const result = document.getElementById('dp-result');
     result.classList.remove('hidden');
 
