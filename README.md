@@ -18,6 +18,7 @@ GaussDB ODBC / JDBC 等驱动与上游 PostgreSQL 生态代码高度相似。上
 - 按上游变更文件名匹配本地 GaussDB 驱动文件
 - 调用 AI 分析上游修复与本地代码相似风险
 - 展示 HIGH / MEDIUM / LOW / N/A 风险等级
+- 支持勾选部分 PR、全选当前筛选结果、批量分析选中 PR
 - 按驱动 Profile 分离缓存 PR 列表和分析结果，避免重复调用接口
 - 支持 Anthropic 兼容接口、Poe 中转、MiniMax 原生 Chat Completions
 

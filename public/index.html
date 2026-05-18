@@ -283,10 +283,23 @@
           <span class="w-2 h-2 bg-blue-500 rounded-full inline-block mr-1"></span>LOW
         </button>
         <button class="filter-tab" data-filter="NOT_APPLICABLE">N/A</button>
-        <div class="ml-auto pb-3">
-          <button onclick="App.analyzeAll()"
-                  class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg transition-colors">
-            批量分析未分析 PR
+        <div class="ml-auto pb-3 flex items-center gap-2">
+          <span id="selection-count" class="text-xs text-slate-500">已选 0</span>
+          <button id="btn-select-visible" onclick="App.selectAllVisible()"
+                  class="text-xs bg-white hover:bg-slate-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-600 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors">
+            全选当前
+          </button>
+          <button id="btn-clear-selection" onclick="App.clearSelection()"
+                  class="text-xs bg-white hover:bg-slate-100 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-600 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors">
+            清空
+          </button>
+          <button id="btn-analyze-selected" onclick="App.analyzeSelected()"
+                  class="text-xs bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors">
+            分析选中
+          </button>
+          <button id="btn-analyze-all" onclick="App.analyzeAll()"
+                  class="text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors">
+            分析全部未分析
           </button>
         </div>
       </div>
@@ -296,6 +309,12 @@
         <table class="w-full text-sm">
           <thead class="bg-slate-100 sticky top-0 z-10">
             <tr class="text-xs text-slate-500 uppercase tracking-wide">
+              <th class="px-4 py-3 text-center w-10">
+                <input id="select-visible-checkbox" type="checkbox"
+                       onclick="event.stopPropagation(); App.toggleSelectVisible(this.checked)"
+                       class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                       title="全选当前筛选结果" />
+              </th>
               <th class="px-4 py-3 text-left w-16">PR #</th>
               <th class="px-4 py-3 text-left">标题</th>
               <th class="px-4 py-3 text-left w-28">合并时间</th>
@@ -306,7 +325,7 @@
           </thead>
           <tbody id="pr-tbody">
             <tr>
-              <td colspan="6" class="text-center py-16 text-slate-400">
+              <td colspan="7" class="text-center py-16 text-slate-400">
                 <div class="flex flex-col items-center gap-2">
                   <svg class="w-10 h-10 text-slate-300 spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -543,6 +562,8 @@ const App = {
     selected:   null, // prNumber currently open in detail panel
     filter:     'all',
     analyzing:  null, // prNumber being analyzed right now
+    selectedPrs: new Set(),
+    batchRunning: false,
     settings:   {},
     profiles:   DEFAULT_PROFILES,
     profile:    'odbc',
@@ -627,6 +648,7 @@ const App = {
     this.state.profile = profileId;
     this.state.selected = null;
     this.state.analyzing = null;
+    this.state.selectedPrs.clear();
     this.state.prs = [];
     this.state.analyses = {};
     document.getElementById('detail-panel')?.classList.add('hidden');
@@ -773,6 +795,7 @@ const App = {
       const data = await fetch(url).then(r => r.json());
       if (Array.isArray(data)) {
         this.state.prs = data;
+        this.pruneSelection();
       } else {
         this.showToast('GitHub API 错误: ' + (data.error || data.message || '未知'), 'error');
       }
@@ -780,6 +803,13 @@ const App = {
       this.showToast('网络错误，无法获取 PR 列表', 'error');
     }
     icon.classList.remove('spin');
+  },
+
+  pruneSelection() {
+    const valid = new Set(this.state.prs.map(pr => pr.number));
+    [...this.state.selectedPrs].forEach(prNumber => {
+      if (!valid.has(prNumber)) this.state.selectedPrs.delete(prNumber);
+    });
   },
 
   async loadAnalyses() {
@@ -804,18 +834,26 @@ const App = {
 
     const params = new URLSearchParams({ profile: this.state.profile });
     if (force) params.set('force', '1');
-    const res = await fetch(`/api/analyze/${encodeURIComponent(prNumber)}?${params.toString()}`, { method: 'POST' });
-    const data = await res.json();
+    try {
+      const res = await fetch(`/api/analyze/${encodeURIComponent(prNumber)}?${params.toString()}`, { method: 'POST' });
+      const data = await res.json();
 
-    this.state.analyzing = null;
-    if (data.error) {
-      this.showDetailError(data.error);
-    } else {
+      if (data.error) {
+        this.showDetailError(data.error);
+        return false;
+      }
+
       this.state.analyses[prNumber] = data;
       this.showDetailResult(data);
+      return true;
+    } catch (err) {
+      this.showDetailError(err.message || '分析请求失败');
+      return false;
+    } finally {
+      this.state.analyzing = null;
+      this.renderStats();
+      this.renderTable();
     }
-    this.renderStats();
-    this.renderTable();
   },
 
   async reanalyze() {
@@ -824,16 +862,78 @@ const App = {
     await this.analyze(this.state.selected, true);
   },
 
+  toggleSelectPR(prNumber, checked) {
+    if (checked) {
+      this.state.selectedPrs.add(prNumber);
+    } else {
+      this.state.selectedPrs.delete(prNumber);
+    }
+    this.updateSelectionControls(this.filteredPRs());
+  },
+
+  toggleSelectVisible(checked) {
+    const visible = this.filteredPRs();
+    visible.forEach(pr => {
+      if (checked) this.state.selectedPrs.add(pr.number);
+      else this.state.selectedPrs.delete(pr.number);
+    });
+    this.renderTable();
+  },
+
+  selectAllVisible() {
+    this.toggleSelectVisible(true);
+  },
+
+  clearSelection() {
+    this.state.selectedPrs.clear();
+    this.renderTable();
+  },
+
+  async analyzeSelected() {
+    const selected = this.state.prs.filter(pr => this.state.selectedPrs.has(pr.number));
+    if (selected.length === 0) {
+      this.showToast('请先勾选要分析的 PR', 'info');
+      return;
+    }
+    await this.analyzeBatch(selected, '选中');
+  },
+
   // Batch analyze all unanalyzed PRs sequentially
   async analyzeAll() {
     const unanalyzed = this.state.prs.filter(pr => !this.state.analyses[pr.number]);
     if (unanalyzed.length === 0) { this.showToast('所有 PR 已分析完毕', 'info'); return; }
-    this.showToast(`开始批量分析 ${unanalyzed.length} 个 PR，请耐心等待…`, 'info');
-    for (const pr of unanalyzed) {
-      if (this.state.analyses[pr.number]) continue; // already done
-      await this.analyze(pr.number);
+    await this.analyzeBatch(unanalyzed, '全部未分析');
+  },
+
+  async analyzeBatch(prs, label = '批量') {
+    if (this.state.batchRunning) {
+      this.showToast('已有批量分析任务正在运行', 'info');
+      return;
     }
-    this.showToast('批量分析完成！', 'success');
+    const targets = prs.filter(pr => !this.state.analyses[pr.number]);
+    if (targets.length === 0) {
+      this.showToast(`${label} PR 均已有分析结果`, 'info');
+      return;
+    }
+
+    this.state.batchRunning = true;
+    this.updateSelectionControls(this.filteredPRs());
+    this.showToast(`开始分析 ${targets.length} 个 PR（${label}），请耐心等待…`, 'info');
+    const completed = new Set();
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const pr = targets[i];
+        if (this.state.analyses[pr.number]) continue;
+        this.showToast(`正在分析 ${i + 1}/${targets.length}: PR #${pr.number}`, 'info');
+        const ok = await this.analyze(pr.number);
+        if (ok) completed.add(pr.number);
+      }
+      this.showToast('批量分析完成', 'success');
+    } finally {
+      this.state.batchRunning = false;
+      completed.forEach(prNumber => this.state.selectedPrs.delete(prNumber));
+      this.renderTable();
+    }
   },
 
   // ── Render: Stats ────────────────────────────────────────
@@ -847,21 +947,53 @@ const App = {
     document.getElementById('stat-low').textContent      = vals.filter(a => a.riskLevel === 'LOW').length;
   },
 
-  // ── Render: Table ─────────────────────────────────────────
-  renderTable() {
-    const { prs, analyses, filter, selected, analyzing } = this.state;
-
-    const filtered = prs.filter(pr => {
+  filteredPRs() {
+    const { prs, analyses, filter } = this.state;
+    return prs.filter(pr => {
       const a = analyses[pr.number];
       if (filter === 'all')        return true;
       if (filter === 'unanalyzed') return !a;
       return a?.riskLevel === filter;
     });
+  },
+
+  updateSelectionControls(filtered = this.filteredPRs()) {
+    const selectedCount = this.state.selectedPrs.size;
+    const countEl = document.getElementById('selection-count');
+    if (countEl) countEl.textContent = `已选 ${selectedCount}`;
+
+    const analyzeBtn = document.getElementById('btn-analyze-selected');
+    if (analyzeBtn) analyzeBtn.disabled = selectedCount === 0 || this.state.batchRunning;
+
+    const selectVisibleBtn = document.getElementById('btn-select-visible');
+    if (selectVisibleBtn) selectVisibleBtn.disabled = filtered.length === 0 || this.state.batchRunning;
+
+    const clearBtn = document.getElementById('btn-clear-selection');
+    if (clearBtn) clearBtn.disabled = selectedCount === 0 || this.state.batchRunning;
+
+    const analyzeAllBtn = document.getElementById('btn-analyze-all');
+    if (analyzeAllBtn) analyzeAllBtn.disabled = this.state.batchRunning;
+
+    const checkbox = document.getElementById('select-visible-checkbox');
+    if (checkbox) {
+      const visibleCount = filtered.length;
+      const checkedCount = filtered.filter(pr => this.state.selectedPrs.has(pr.number)).length;
+      checkbox.checked = visibleCount > 0 && checkedCount === visibleCount;
+      checkbox.indeterminate = checkedCount > 0 && checkedCount < visibleCount;
+      checkbox.disabled = visibleCount === 0 || this.state.batchRunning;
+    }
+  },
+
+  // ── Render: Table ─────────────────────────────────────────
+  renderTable() {
+    const { analyses, selected, analyzing, batchRunning } = this.state;
+    const filtered = this.filteredPRs();
 
     const tbody = document.getElementById('pr-tbody');
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-16 text-slate-400 text-sm">
+      tbody.innerHTML = `<tr><td colspan="7" class="text-center py-16 text-slate-400 text-sm">
         当前筛选条件下无数据</td></tr>`;
+      this.updateSelectionControls(filtered);
       return;
     }
 
@@ -869,6 +1001,7 @@ const App = {
       const a       = analyses[pr.number];
       const isAnalyzing = analyzing === pr.number;
       const isSelected  = selected  === pr.number;
+      const isChecked   = this.state.selectedPrs.has(pr.number);
       const mergedDate  = pr.merged_at
         ? new Date(pr.merged_at).toLocaleDateString('zh-CN', { month:'2-digit', day:'2-digit', year:'2-digit' })
         : '—';
@@ -880,11 +1013,21 @@ const App = {
 
       const actionBtn = isAnalyzing
         ? `<div class="flex justify-center"><svg class="w-4 h-4 spin text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></div>`
-        : a
+        : batchRunning
+          ? `<span class="text-xs text-slate-400">批量中</span>`
+          : a
           ? `<button onclick="App.selectPR(${JSON.stringify(pr.number)})" class="text-xs text-blue-600 hover:text-blue-800 font-medium">查看</button>`
           : `<button onclick="App.analyze(${JSON.stringify(pr.number)})" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-md transition-colors">分析</button>`;
 
       return `<tr class="pr-row${isSelected ? ' selected' : ''}" onclick="App.clickRow(${JSON.stringify(pr.number)}, ${!!a})">
+        <td class="px-4 py-3 text-center" onclick="event.stopPropagation()">
+          <input type="checkbox"
+                 ${isChecked ? 'checked' : ''}
+                 ${this.state.batchRunning ? 'disabled' : ''}
+                 onchange="App.toggleSelectPR(${JSON.stringify(pr.number)}, this.checked)"
+                 class="rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
+                 title="选择 PR #${pr.number}" />
+        </td>
         <td class="px-4 py-3 text-slate-500 font-mono text-xs">#${pr.number}</td>
         <td class="px-4 py-3 text-slate-800 text-xs leading-snug max-w-xs">
           <div class="truncate" title="${escHtml(pr.title)}">${escHtml(pr.title)}</div>
@@ -895,9 +1038,14 @@ const App = {
         <td class="px-4 py-3 text-center" onclick="event.stopPropagation()">${actionBtn}</td>
       </tr>`;
     }).join('');
+    this.updateSelectionControls(filtered);
   },
 
   clickRow(prNumber, hasAnalysis) {
+    if (this.state.batchRunning && !hasAnalysis) {
+      this.showToast('批量分析进行中，请等待当前任务完成', 'info');
+      return;
+    }
     if (hasAnalysis) {
       this.selectPR(prNumber);
     } else {
