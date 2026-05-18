@@ -17,7 +17,7 @@ app.use(express.static(join(__dirname, 'public')));
 
 const DATA_DIR = join(__dirname, 'data');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
-const ANALYSIS_PROMPT_VERSION = 8;
+const ANALYSIS_PROMPT_VERSION = 10;
 const ANALYSIS_METHOD = 'SOURCE_CONFIRMED_DRIVER_SYNC';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -88,13 +88,17 @@ function allPublicProfiles() {
 // ─── Settings ───────────────────────────────────────────────────────────────
 
 function normalizeAiProvider(provider) {
-  return provider === 'minimax' ? 'minimax' : 'anthropic';
+  const p = String(provider || '').toLowerCase();
+  if (p === 'minimax' || p === 'deepseek') return p;
+  return 'anthropic';
 }
 
 function defaultAiProvider() {
   const provider = (process.env.AI_PROVIDER || '').toLowerCase();
-  if (provider === 'anthropic' || provider === 'minimax') return provider;
-  return process.env.MINIMAX_API_KEY ? 'minimax' : 'anthropic';
+  if (provider === 'anthropic' || provider === 'minimax' || provider === 'deepseek') return provider;
+  if (process.env.DEEPSEEK_API_KEY) return 'deepseek';
+  if (process.env.MINIMAX_API_KEY) return 'minimax';
+  return 'anthropic';
 }
 
 const CLAUDE_ENV_KEYS = [
@@ -285,6 +289,9 @@ function loadSettings() {
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || claudeDefaults.anthropicBaseUrl || '',
     anthropicApiKey:  process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || claudeDefaults.anthropicApiKey || '',
     anthropicModel:   process.env.ANTHROPIC_MODEL || process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || claudeDefaults.anthropicModel || 'claude-sonnet-4.6',
+    deepseekApiKey:   process.env.DEEPSEEK_API_KEY || '',
+    deepseekModel:    process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+    deepseekBaseUrl:  process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
     minimaxApiKey:    process.env.MINIMAX_API_KEY || '',
     minimaxModel:     process.env.MINIMAX_MODEL || 'MiniMax-Text-01',
     minimaxBaseUrl:   process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1',
@@ -315,6 +322,7 @@ function localPathForProfile(settings, profile = getProfile(settings.driverProfi
 function isConfigured(s) {
   if (!localPathForProfile(s)) return false;
   if (s.aiProvider === 'minimax') return !!s.minimaxApiKey;
+  if (s.aiProvider === 'deepseek') return !!s.deepseekApiKey;
   return !!s.anthropicApiKey;
 }
 
@@ -328,10 +336,13 @@ app.get('/api/settings', (req, res) => {
     aiProvider:       s.aiProvider,
     anthropicBaseUrl: s.anthropicBaseUrl || '',
     anthropicModel:   s.anthropicModel   || 'claude-sonnet-4.6',
+    deepseekModel:    s.deepseekModel    || 'deepseek-chat',
+    deepseekBaseUrl:  s.deepseekBaseUrl  || 'https://api.deepseek.com/v1',
     minimaxModel:     s.minimaxModel     || 'MiniMax-Text-01',
     minimaxBaseUrl:   s.minimaxBaseUrl   || 'https://api.minimax.chat/v1',
     proxy:            s.proxy            || '',
     hasAnthropicKey:  !!s.anthropicApiKey,
+    hasDeepseekKey:   !!s.deepseekApiKey,
     hasMinimaxKey:    !!s.minimaxApiKey,
     hasGithubToken:   !!s.githubToken,
     configured:       isConfigured(s),
@@ -342,6 +353,7 @@ app.post('/api/settings', (req, res) => {
   const allowed = [
     'driverProfile', 'gaussdbOdbcPath', 'gaussdbJdbcPath', 'aiProvider',
     'anthropicApiKey', 'anthropicBaseUrl', 'anthropicModel',
+    'deepseekApiKey', 'deepseekModel', 'deepseekBaseUrl',
     'minimaxApiKey', 'minimaxModel', 'minimaxBaseUrl',
     'githubToken', 'proxy',
   ];
@@ -351,7 +363,7 @@ app.post('/api/settings', (req, res) => {
     // Only overwrite if value was explicitly sent and non-empty (except paths which can be empty string)
     if (val !== undefined && (val !== '' || [
       'gaussdbOdbcPath', 'gaussdbJdbcPath',
-      'anthropicBaseUrl', 'proxy', 'minimaxBaseUrl',
+      'anthropicBaseUrl', 'proxy', 'minimaxBaseUrl', 'deepseekBaseUrl',
     ].includes(key))) {
       patch[key] = val;
     }
@@ -435,6 +447,26 @@ function isAiRateLimitError(err) {
     || msg.includes('too many requests');
 }
 
+function isAiConnectionError(err) {
+  const msg = aiErrorMessage(err).toLowerCase();
+  return msg.includes('premature close')
+    || msg.includes('invalid response body')
+    || msg.includes('econnreset')
+    || msg.includes('econnrefused')
+    || msg.includes('etimedout')
+    || msg.includes('enotfound')
+    || msg.includes('socket hang up')
+    || msg.includes('read econnaborted')
+    || msg.includes('fetch failed')
+    || msg.includes('network error')
+    || msg.includes('timeout')
+    || msg.includes('abort');
+}
+
+function isAiRetryableError(err) {
+  return isAiRateLimitError(err) || isAiConnectionError(err);
+}
+
 async function callAI(prompt) {
   return runInAiQueue(() => callAIWithRetry(prompt));
 }
@@ -446,9 +478,13 @@ async function callAIWithRetry(prompt) {
       return await callAIOnce(prompt);
     } catch (err) {
       lastErr = err;
-      if (!isAiRateLimitError(err) || attempt === AI_RETRY_ATTEMPTS) break;
-      const delayMs = Math.min(20000, 1500 * attempt * attempt);
-      console.warn(`AI rate/concurrency limit hit, retrying in ${delayMs}ms (${attempt}/${AI_RETRY_ATTEMPTS})`);
+      if (!isAiRetryableError(err) || attempt === AI_RETRY_ATTEMPTS) break;
+      const isRateLimit = isAiRateLimitError(err);
+      const delayMs = isRateLimit
+        ? Math.min(20000, 1500 * attempt * attempt)
+        : Math.min(15000, 800 * attempt * attempt);
+      const reason = isRateLimit ? 'rate/concurrency limit' : 'connection error';
+      console.warn(`AI ${reason}, retrying in ${delayMs}ms (${attempt}/${AI_RETRY_ATTEMPTS})`);
       await sleep(delayMs);
     }
   }
@@ -458,6 +494,7 @@ async function callAIWithRetry(prompt) {
 async function callAIOnce(prompt) {
   const s = loadSettings();
   if (s.aiProvider === 'minimax') return callMiniMax(prompt, s);
+  if (s.aiProvider === 'deepseek') return callDeepSeek(prompt, s);
   return callAnthropic(prompt, s);
 }
 
@@ -499,6 +536,33 @@ async function callMiniMax(prompt, s) {
   if (!r.ok) throw new Error(data.error?.message || `MiniMax API ${r.status}`);
   const content = data.choices?.[0]?.message?.content || data.choices?.[0]?.text;
   if (!content) throw new Error('MiniMax API 返回内容为空');
+  return content;
+}
+
+async function callDeepSeek(prompt, s) {
+  if (!s.deepseekApiKey) throw new Error('DeepSeek API Key 未配置');
+  const baseUrl = (s.deepseekBaseUrl || 'https://api.deepseek.com/v1').replace(/\/$/, '');
+  const model   = s.deepseekModel || 'deepseek-chat';
+
+  const fetchOpts = {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${s.deepseekApiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 4096,
+    }),
+  };
+  if (s.proxy) fetchOpts.agent = new HttpsProxyAgent(s.proxy);
+
+  const r    = await fetch(`${baseUrl}/chat/completions`, fetchOpts);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error?.message || `DeepSeek API ${r.status}`);
+  const content = data.choices?.[0]?.message?.content || data.choices?.[0]?.text;
+  if (!content) throw new Error('DeepSeek API 返回内容为空');
   return content;
 }
 
@@ -666,6 +730,7 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
         gaussdbSnippet: local ? extractRelevantSnippet(local.content, f.patch, patchInfo) : null,
       };
     });
+    const upstreamIntent = buildUpstreamIntent(pr, files, fileContexts);
 
     if (fileContexts.length === 0) {
       const result = buildResult(prNumber, pr, files, [], {
@@ -677,20 +742,20 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
           : '变更仅涉及当前 Profile 不关注的构建脚本/文档/测试等文件',
         evidence: [],
         affectedFiles: [], recommendation: '无需处理', hasCorrespondingCode: false,
-      }, profile);
+      }, profile, null, upstreamIntent);
       writeFileSync(cacheFile, JSON.stringify(result, null, 2));
       return res.json(result);
     }
 
     const ruleBasedPreClassification = aggregateRuleBasedPreClassification(fileContexts);
     if (isHighConfidenceRule(ruleBasedPreClassification)) {
-      const analysis = buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification);
-      const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification);
+      const analysis = buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification, upstreamIntent);
+      const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification, upstreamIntent);
       writeFileSync(cacheFile, JSON.stringify(result, null, 2));
       return res.json(result);
     }
 
-    const prompt = buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification);
+    const prompt = buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification, upstreamIntent);
     const rawText = await callAI(prompt);
 
     let analysis;
@@ -702,18 +767,11 @@ app.post('/api/analyze/:prNumber', async (req, res) => {
       } catch {}
     }
     if (!analysis) {
-      analysis = {
-        summary: stripReasoningText(rawText).slice(0, 200),
-        bugType: '其他', riskLevel: 'UNKNOWN',
-        fixStatus: 'UNCLEAR',
-        riskReason: 'AI 输出不是合法 JSON，已去除推理文本后仍解析失败。请重新分析或更换非推理模型。',
-        evidence: [],
-        affectedFiles: [], recommendation: '', hasCorrespondingCode: false,
-      };
+      analysis = buildParseFailureAnalysis(pr, fileContexts, ruleBasedPreClassification, rawText, upstreamIntent);
     }
     analysis = normalizeAnalysis(analysis, fileContexts, ruleBasedPreClassification);
 
-    const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification);
+    const result = buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification, upstreamIntent);
     writeFileSync(cacheFile, JSON.stringify(result, null, 2));
     res.json(result);
 
@@ -749,10 +807,10 @@ app.get('/api/debug', (req, res) => {
     upstreamRepo:    profile.upstreamRepo,
     localPath:       localPathForProfile(s, profile) || '(未设置)',
     aiProvider:      s.aiProvider,
-    model:           s.aiProvider === 'minimax' ? s.minimaxModel : s.anthropicModel,
-    baseUrl:         s.aiProvider === 'minimax' ? s.minimaxBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com'),
+    model:           s.aiProvider === 'minimax' ? s.minimaxModel : s.aiProvider === 'deepseek' ? s.deepseekModel : s.anthropicModel,
+    baseUrl:         s.aiProvider === 'minimax' ? s.minimaxBaseUrl : s.aiProvider === 'deepseek' ? s.deepseekBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com'),
     proxy:           s.proxy || '(无)',
-    hasKey:          s.aiProvider === 'minimax' ? !!s.minimaxApiKey : !!s.anthropicApiKey,
+    hasKey:          s.aiProvider === 'minimax' ? !!s.minimaxApiKey : s.aiProvider === 'deepseek' ? !!s.deepseekApiKey : !!s.anthropicApiKey,
     gaussdbOdbcPath: s.gaussdbOdbcPath || '(未设置)',
     gaussdbJdbcPath: s.gaussdbJdbcPath || '(未设置)',
   });
@@ -984,6 +1042,41 @@ function aggregateRuleBasedPreClassification(fileContexts) {
   };
 }
 
+function buildUpstreamIntent(pr, files = [], fileContexts = []) {
+  const title = String(pr?.title || '').trim();
+  const body = String(pr?.body || '').replace(/\s+/g, ' ').trim();
+  const changedSourceFiles = fileContexts.map(f => f.upstreamFile);
+  const changedTestFiles = files
+    .map(f => f.filename)
+    .filter(name => /(^|\/)(test|tests|expected)\//i.test(name) || /test/i.test(name))
+    .slice(0, 8);
+  const changedFunctions = [...new Set(fileContexts.flatMap(f => f.patchInfo?.functionNames || []))].slice(0, 12);
+  const addedAnchors = [...new Set(fileContexts.flatMap(f => f.localSignals?.patchFacts?.addedAnchors || []))].slice(0, 8);
+  const removedAnchors = [...new Set(fileContexts.flatMap(f => f.localSignals?.patchFacts?.removedAnchors || []))].slice(0, 8);
+  const text = [title, body, ...changedSourceFiles, ...changedTestFiles, ...addedAnchors, ...removedAnchors].join('\n');
+
+  let summary = title ? `上游 PR 修复：${title}` : '上游 PR 修复内容需结合 diff 判断';
+  const lower = text.toLowerCase();
+  if (/sqlprimarykeys/i.test(text) && /include column|include columns|include/i.test(lower)) {
+    summary = '上游 PR 修复 SQLPrimaryKeys 结果包含 INCLUDE columns 的问题，目标是只返回真正参与主键的列。';
+  } else if (/sql_c_binary/i.test(text) && /(terminator|realloc|buffer)/i.test(text)) {
+    summary = '上游 PR 修复 SQL_C_BINARY 缓冲区长度计算未覆盖额外终止符空间的问题。';
+  } else if (/percent/i.test(text) && /(decode|escape)/i.test(text)) {
+    summary = '上游 PR 修复连接串 percent escape 解码前缺少有效性校验的问题。';
+  }
+
+  return {
+    summary,
+    title,
+    bodyExcerpt: body.slice(0, 500),
+    changedSourceFiles,
+    changedTestFiles,
+    changedFunctions,
+    addedAnchors,
+    removedAnchors,
+  };
+}
+
 function findExactChangedLineMatches(lines, changedLines) {
   const normalizedChanged = changedLines
     .map(line => ({ source: line, normalized: normalizeCodeLine(line) }))
@@ -1177,7 +1270,7 @@ function driverSkillPrompt(profile) {
 当前 Profile：${profile.name}。请按该 Profile 的驱动语义分析，不要跨驱动猜测。`;
 }
 
-function buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification) {
+function buildPrompt(pr, prNumber, fileContexts, profile, ruleBasedPreClassification, upstreamIntent) {
   return `/no_think
 你是资深数据库驱动开发工程师，${profile.promptExpert}。你现在做的是“上游修复同步评估”，不是泛泛总结 PR。
 
@@ -1210,6 +1303,13 @@ ${driverSkillPrompt(profile)}
 - 当前驱动 Profile：${profile.name}
 - 标题：${pr.title}
 - 描述：${(pr.body || '无描述').slice(0, 600)}
+
+## 上游修复意图
+这是后端先从 PR 标题、描述、源码 diff 和测试文件名提取的上游语义。你必须先理解它，再判断本地代码是否已有等价修复。
+
+\`\`\`json
+${JSON.stringify(upstreamIntent || {}, null, 2)}
+\`\`\`
 
 ## 程序确定性初判
 这是后端基于上游新增/删除代码行和本地代码精确命中结果生成的规则初判。你必须优先参考它；如果要推翻，必须在本地函数级上下文中给出更强证据。
@@ -1444,8 +1544,9 @@ function inferBugProfileFromPr(pr, fileContexts) {
   return { bugType: '其他', riskLevel: 'MEDIUM' };
 }
 
-function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification) {
+function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification, upstreamIntent = null) {
   const { bugType, riskLevel } = inferBugProfileFromPr(pr, fileContexts);
+  const intentSummary = upstreamIntent?.summary || `上游 PR 修复“${pr.title}”。`;
   const affectedFiles = fileContexts
     .filter(f => f.gaussdbPath)
     .map(f => f.gaussdbPath);
@@ -1463,7 +1564,7 @@ function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification) {
 
   if (ruleBasedPreClassification.fixStatus === 'ALREADY_FIXED') {
     return {
-      summary: `上游 PR 修复“${pr.title}”，本地已精确命中上游新增修复代码行。`,
+      summary: `${intentSummary} 本地已精确命中上游新增修复代码行。`,
       fixStatus: 'ALREADY_FIXED',
       bugType,
       riskLevel: 'NOT_APPLICABLE',
@@ -1481,7 +1582,7 @@ function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification) {
       ? `建议同步上游新增修复逻辑，重点核对：${addedAnchors.join('；')}`
       : '建议同步上游新增修复逻辑，并优先处理证据中列出的本地文件和行号。';
     return {
-      summary: `上游 PR 修复“${pr.title}”，本地仍精确命中上游删除的旧逻辑。`,
+      summary: `${intentSummary} 本地仍精确命中上游删除的旧逻辑。`,
       fixStatus: 'NEEDS_FIX',
       bugType,
       riskLevel,
@@ -1495,7 +1596,7 @@ function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification) {
   }
 
   return {
-    summary: `上游 PR “${pr.title}” 在本地未找到对应产品代码。`,
+    summary: `${intentSummary} 本地未找到对应产品代码。`,
     fixStatus: 'NOT_PRESENT',
     bugType: '其他',
     riskLevel: 'NOT_APPLICABLE',
@@ -1508,7 +1609,33 @@ function buildRuleBasedAnalysis(pr, fileContexts, ruleBasedPreClassification) {
   };
 }
 
-function buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification = null) {
+function buildParseFailureAnalysis(pr, fileContexts, ruleBasedPreClassification, rawText, upstreamIntent = null) {
+  const affectedFiles = fileContexts
+    .filter(f => f.gaussdbPath)
+    .map(f => f.gaussdbPath);
+  const evidence = [
+    ...(ruleBasedPreClassification?.evidence || []),
+    ...affectedFiles.map(path => `本地找到对应代码文件：${path}`),
+  ].filter(Boolean).slice(0, 8);
+  const cleanText = stripReasoningText(rawText || '').replace(/\s+/g, ' ').trim();
+  const rawHint = cleanText ? `模型原始输出节选：${cleanText.slice(0, 180)}` : '模型未返回可解析内容。';
+  const intentSummary = upstreamIntent?.summary || `上游 PR 修复“${pr.title}”。`;
+
+  return {
+    summary: `${intentSummary} 已找到本地对应代码，但模型输出无法解析，当前结论暂定为证据不足。`,
+    fixStatus: 'UNCLEAR',
+    bugType: inferBugProfileFromPr(pr, fileContexts).bugType,
+    riskLevel: 'UNKNOWN',
+    riskReason: `AI 输出不是合法 JSON，已去除推理文本后仍解析失败；${rawHint}`,
+    evidence,
+    affectedFiles,
+    recommendation: '请重新分析，或切换到非推理/JSON 输出更稳定的模型；人工确认时优先查看上方本地文件和规则层命中证据。',
+    hasCorrespondingCode: affectedFiles.length > 0,
+    analysisSource: 'parse-fallback',
+  };
+}
+
+function buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleBasedPreClassification = null, upstreamIntent = null) {
   return {
     prNumber:     parseInt(prNumber),
     prTitle:      pr.title,
@@ -1517,6 +1644,7 @@ function buildResult(prNumber, pr, files, fileContexts, analysis, profile, ruleB
     analyzedAt:   new Date().toISOString(),
     analysisPromptVersion: ANALYSIS_PROMPT_VERSION,
     analysisMethod: ANALYSIS_METHOD,
+    upstreamIntent,
     ruleBasedPreClassification,
     profile:       publicProfile(profile),
     changedFiles: files.map(f => f.filename),
@@ -1539,8 +1667,8 @@ function logStartup(port) {
   console.log(`GaussDB PR Tracker → http://localhost:${port}`);
   console.log(`  Driver   : ${profile.name} (${profile.upstreamRepo})`);
   console.log(`  Provider : ${provider.toUpperCase()}`);
-  console.log(`  Model    : ${provider === 'minimax' ? s.minimaxModel : s.anthropicModel}`);
-  console.log(`  Base URL : ${provider === 'minimax' ? s.minimaxBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com')}`);
+  console.log(`  Model    : ${provider === 'minimax' ? s.minimaxModel : provider === 'deepseek' ? s.deepseekModel : s.anthropicModel}`);
+  console.log(`  Base URL : ${provider === 'minimax' ? s.minimaxBaseUrl : provider === 'deepseek' ? s.deepseekBaseUrl : (s.anthropicBaseUrl || 'https://api.anthropic.com')}`);
   console.log(`  Proxy    : ${s.proxy || '(无)'}`);
   console.log(`  Code Path: ${localPathForProfile(s, profile) || '(未配置)'}`);
 }
@@ -1566,9 +1694,11 @@ function startServer(port, remainingAttempts = MAX_PORT_ATTEMPTS) {
 export const __test = {
   parsePatch,
   extractPatchFacts,
+  buildUpstreamIntent,
   buildLocalPatchSignals,
   aggregateRuleBasedPreClassification,
   buildRuleBasedAnalysis,
+  buildParseFailureAnalysis,
   isHighConfidenceRule,
   extractRelevantSnippet,
   findFunctionDefinitionStart,

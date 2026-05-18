@@ -110,9 +110,10 @@
         <select id="s-provider" onchange="toggleSetupProviderFields()"
                 class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
           <option value="anthropic">Anthropic 兼容接口（Claude / MiniMax-M2.7 / Poe）</option>
+          <option value="deepseek">DeepSeek（OpenAI Chat Completions）</option>
           <option value="minimax">MiniMax 原生 Chat Completions</option>
         </select>
-        <p class="text-xs text-slate-400 mt-1">内网 MiniMax-M2.7 如按 ClaudeCode 方式暴露，请选择 Anthropic 兼容接口</p>
+        <p class="text-xs text-slate-400 mt-1">DeepSeek 请选择 DeepSeek 选项；内网 MiniMax-M2.7 如按 ClaudeCode 方式暴露，请选择 Anthropic 兼容接口</p>
       </div>
 
       <div id="setup-anthropic-fields" class="space-y-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
@@ -135,6 +136,28 @@
                  class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <p class="text-xs text-slate-400">等价于环境变量 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / ANTHROPIC_MODEL</p>
+      </div>
+
+      <div id="setup-deepseek-fields" class="hidden space-y-3 p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">API Key</label>
+          <input id="s-deepseek-key" type="password"
+                 placeholder="sk-..."
+                 class="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">Base URL</label>
+          <input id="s-deepseek-baseurl" type="text"
+                 value="https://api.deepseek.com/v1"
+                 class="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">模型名</label>
+          <input id="s-deepseek-model" type="text"
+                 value="deepseek-chat"
+                 class="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+        </div>
+        <p class="text-xs text-emerald-600">等价于环境变量 DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL</p>
       </div>
 
       <div id="setup-minimax-fields" class="hidden space-y-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
@@ -479,6 +502,7 @@
         <select id="cfg-provider" onchange="toggleProviderFields()"
                 class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
           <option value="anthropic">Anthropic 兼容接口（Claude / MiniMax-M2.7 / Poe）</option>
+          <option value="deepseek">DeepSeek（OpenAI Chat Completions）</option>
           <option value="minimax">MiniMax 原生 Chat Completions</option>
         </select>
       </div>
@@ -502,6 +526,24 @@
           <label class="block text-xs font-medium text-slate-600 mb-1">模型名</label>
           <input id="cfg-model" type="text" placeholder="MiniMax-M2.7"
                  class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+      </div>
+      <div id="cfg-deepseek-fields" class="hidden space-y-3 p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+        <div class="text-xs font-semibold text-emerald-600 uppercase tracking-wide">DeepSeek</div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">API Key（留空不修改）</label>
+          <input id="cfg-deepseek-key" type="password" placeholder="sk-..."
+                 class="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"/>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">Base URL</label>
+          <input id="cfg-deepseek-baseurl" type="text" placeholder="https://api.deepseek.com/v1"
+                 class="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"/>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-600 mb-1">模型名</label>
+          <input id="cfg-deepseek-model" type="text" placeholder="deepseek-chat"
+                 class="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"/>
         </div>
       </div>
       <div id="cfg-minimax-fields" class="hidden space-y-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
@@ -693,6 +735,8 @@ const App = {
     setValue('s-provider', s.aiProvider || 'anthropic');
     setValue('s-anthropic-baseurl', s.anthropicBaseUrl || '');
     setValue('s-anthropic-model', s.anthropicModel || 'MiniMax-M2.7');
+    setValue('s-deepseek-model', s.deepseekModel || 'deepseek-chat');
+    setValue('s-deepseek-baseurl', s.deepseekBaseUrl || 'https://api.deepseek.com/v1');
     setValue('s-minimax-model', s.minimaxModel || 'MiniMax-Text-01');
     setValue('s-minimax-baseurl', s.minimaxBaseUrl || 'https://api.minimax.chat/v1');
     setValue('s-proxy', s.proxy || '');
@@ -701,6 +745,8 @@ const App = {
     setValue('cfg-provider', s.aiProvider || 'anthropic');
     setValue('cfg-baseurl', s.anthropicBaseUrl || '');
     setValue('cfg-model', s.anthropicModel || 'MiniMax-M2.7');
+    setValue('cfg-deepseek-model', s.deepseekModel || 'deepseek-chat');
+    setValue('cfg-deepseek-baseurl', s.deepseekBaseUrl || 'https://api.deepseek.com/v1');
     setValue('cfg-minimax-model', s.minimaxModel || 'MiniMax-Text-01');
     setValue('cfg-minimax-baseurl', s.minimaxBaseUrl || 'https://api.minimax.chat/v1');
     setValue('cfg-proxy', s.proxy || '');
@@ -710,9 +756,9 @@ const App = {
 
     const status = document.getElementById('setup-ai-status');
     if (status) {
-      const hasKey = s.aiProvider === 'minimax' ? s.hasMinimaxKey : s.hasAnthropicKey;
+      const hasKey = s.aiProvider === 'minimax' ? s.hasMinimaxKey : s.aiProvider === 'deepseek' ? s.hasDeepseekKey : s.hasAnthropicKey;
       if (hasKey) {
-        const model = s.aiProvider === 'minimax' ? s.minimaxModel : s.anthropicModel;
+        const model = s.aiProvider === 'minimax' ? s.minimaxModel : s.aiProvider === 'deepseek' ? s.deepseekModel : s.anthropicModel;
         status.textContent = `已检测到 AI 密钥，当前模型：${model || '未指定'}`;
         status.classList.remove('hidden');
       } else {
@@ -1247,6 +1293,10 @@ document.getElementById('setup-form').addEventListener('submit', async e => {
     body.anthropicApiKey = document.getElementById('s-anthropic-key').value.trim();
     body.anthropicBaseUrl = document.getElementById('s-anthropic-baseurl').value.trim();
     body.anthropicModel = document.getElementById('s-anthropic-model').value.trim() || 'MiniMax-M2.7';
+  } else if (provider === 'deepseek') {
+    body.deepseekApiKey = document.getElementById('s-deepseek-key').value.trim();
+    body.deepseekModel = document.getElementById('s-deepseek-model').value.trim() || 'deepseek-chat';
+    body.deepseekBaseUrl = document.getElementById('s-deepseek-baseurl').value.trim() || 'https://api.deepseek.com/v1';
   } else {
     body.minimaxApiKey = document.getElementById('s-minimax-key').value.trim();
     body.minimaxModel = document.getElementById('s-minimax-model').value.trim() || 'MiniMax-Text-01';
@@ -1255,6 +1305,8 @@ document.getElementById('setup-form').addEventListener('submit', async e => {
   const existing = App.state.settings || {};
   const hasProviderKey = provider === 'minimax'
     ? (!!body.minimaxApiKey || existing.hasMinimaxKey)
+    : provider === 'deepseek'
+    ? (!!body.deepseekApiKey || existing.hasDeepseekKey)
     : (!!body.anthropicApiKey || existing.hasAnthropicKey);
   if (!body[profile.localPathKey] || !hasProviderKey) {
     errEl.textContent = '本地代码路径和 API Key 为必填项';
@@ -1272,12 +1324,14 @@ document.getElementById('setup-form').addEventListener('submit', async e => {
 function toggleSetupProviderFields() {
   const provider = document.getElementById('s-provider').value;
   document.getElementById('setup-anthropic-fields').classList.toggle('hidden', provider !== 'anthropic');
+  document.getElementById('setup-deepseek-fields').classList.toggle('hidden', provider !== 'deepseek');
   document.getElementById('setup-minimax-fields').classList.toggle('hidden', provider !== 'minimax');
 }
 
 function toggleProviderFields() {
   const provider = document.getElementById('cfg-provider').value;
   document.getElementById('cfg-anthropic-fields').classList.toggle('hidden', provider !== 'anthropic');
+  document.getElementById('cfg-deepseek-fields').classList.toggle('hidden', provider !== 'deepseek');
   document.getElementById('cfg-minimax-fields').classList.toggle('hidden', provider !== 'minimax');
 }
 
@@ -1292,6 +1346,9 @@ document.getElementById('settings-form').addEventListener('submit', async e => {
     anthropicApiKey:  document.getElementById('cfg-apikey').value.trim() || undefined,
     anthropicBaseUrl: document.getElementById('cfg-baseurl').value.trim(),
     anthropicModel:   document.getElementById('cfg-model').value.trim(),
+    deepseekApiKey:   document.getElementById('cfg-deepseek-key').value.trim() || undefined,
+    deepseekModel:    document.getElementById('cfg-deepseek-model').value.trim(),
+    deepseekBaseUrl:  document.getElementById('cfg-deepseek-baseurl').value.trim(),
     minimaxApiKey:    document.getElementById('cfg-minimax-key').value.trim() || undefined,
     minimaxModel:     document.getElementById('cfg-minimax-model').value.trim(),
     minimaxBaseUrl:   document.getElementById('cfg-minimax-baseurl').value.trim(),

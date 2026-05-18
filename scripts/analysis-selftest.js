@@ -83,6 +83,23 @@ assert(ruleOnlyAnalysis.fixStatus === 'NEEDS_FIX', 'rule-only analysis should pr
 assert(ruleOnlyAnalysis.summary.includes('SQL_C_BINARY'), 'rule-only analysis should include a useful summary');
 assert(ruleOnlyAnalysis.recommendation, 'rule-only analysis should include a recommendation');
 
+const parseFallback = __test.buildParseFailureAnalysis(
+  { title: 'Fix SQLPrimaryKeys to exclude INCLUDE columns from results' },
+  [{ gaussdbPath: 'info.c', localSignals: fixedSignals }],
+  { fixStatus: 'UNCLEAR', confidence: 'LOW', evidence: ['local evidence sample'] },
+  '<think>reasoning</think> not json',
+  __test.buildUpstreamIntent(
+    { title: 'Fix SQLPrimaryKeys to exclude INCLUDE columns from results' },
+    [{ filename: 'test/src/primarykeys-include-test.c' }],
+    [{ upstreamFile: 'info.c', patchInfo }]
+  )
+);
+assert(parseFallback.analysisSource === 'parse-fallback', 'parse failure should use deterministic fallback');
+assert(parseFallback.summary.includes('SQLPrimaryKeys'), 'parse fallback should include a useful summary');
+assert(parseFallback.summary.includes('INCLUDE columns'), 'parse fallback should include upstream intent');
+assert(parseFallback.evidence.length > 0, 'parse fallback should keep local evidence');
+assert(parseFallback.recommendation, 'parse fallback should include a recommendation');
+
 const functionStart = __test.findFunctionDefinitionStart(fixedLocal.split('\n'), 'setup_getdataclass');
 assert(functionStart >= 0, 'multi-line C function signature should be detected');
 
