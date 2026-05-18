@@ -2,7 +2,7 @@
 
 > 文档定位：用于公司内部 Wiki、AI 辅助编程优秀实践案例沉淀、团队汇报材料补充。  
 > 项目名称：GaussDB Driver PR Tracker  
-> 适用范围：GaussDB 驱动方向，尤其是 ODBC / JDBC / libpq 等与 PostgreSQL 生态高度相关的客户端驱动代码。  
+> 适用范围：GaussDB 驱动方向，当前落地覆盖 ODBC / JDBC 两类与 PostgreSQL 生态高度相关的客户端驱动代码。
 > 截图说明：本文已预留截图占位，实际页面截图由维护人补充到对应位置。
 
 ---
@@ -31,7 +31,7 @@
 
 ## 1. 背景与痛点
 
-GaussDB 数据库驱动长期需要面向多种生态协议和客户端接口进行维护，例如 ODBC、JDBC、libpq 等。由于 GaussDB 驱动与 PostgreSQL 开源生态存在较高相似度，上游社区已经合入的缺陷修复 PR 往往对 GaussDB 驱动具备重要参考价值。
+GaussDB 数据库驱动长期需要面向多种生态协议和客户端接口进行维护，例如 ODBC、JDBC 等。由于 GaussDB 驱动与 PostgreSQL 开源生态存在较高相似度，上游社区已经合入的缺陷修复 PR 往往对 GaussDB 驱动具备重要参考价值。
 
 在质量排查阶段，团队需要持续关注上游 `psqlodbc`、`pgjdbc` 等项目的修复动态，并判断本地 GaussDB 驱动是否存在相同或相似问题。传统处理方式主要依赖人工：
 
@@ -146,8 +146,8 @@ GaussDB 驱动与上游 PostgreSQL 驱动高度相似，但并不总是一比一
 
 构建一个面向 GaussDB 驱动质量排查的 AI 辅助工具，实现：
 
-1. 自动拉取上游 `psqlodbc` 已合入 PR。
-2. 自动匹配本地 GaussDB ODBC 仓库中的对应文件。
+1. 自动拉取上游 `psqlodbc` / `pgjdbc` 已合入 PR。
+2. 按驱动 Profile 自动匹配本地 GaussDB ODBC / JDBC 仓库中的对应文件。
 3. 自动构造上游 diff 与本地代码上下文。
 4. 使用 AI 判断本地是否存在相同或相似问题。
 5. 区分本地状态：已修复、需要同步、本地无对应代码、证据不足。
@@ -185,8 +185,8 @@ GaussDB 驱动与上游 PostgreSQL 驱动高度相似，但并不总是一比一
 
 - 后端：Node.js + Express。
 - 前端：单页 HTML + Tailwind CSS。
-- 数据源：GitHub psqlODBC merged PR。
-- 本地代码源：GaussDB ODBC 本地仓库。
+- 数据源：GitHub 上游驱动 merged PR。
+- 本地代码源：GaussDB ODBC / JDBC 本地仓库。
 - AI 接口：Anthropic 兼容接口 / MiniMax Chat Completions。
 - 缓存：本地 `data/` 目录。
 
@@ -194,9 +194,9 @@ GaussDB 驱动与上游 PostgreSQL 驱动高度相似，但并不总是一比一
 
 ```mermaid
 flowchart LR
-    A[上游 psqlODBC merged PR] --> B[拉取 PR 列表]
+    A[上游 psqlODBC / pgjdbc merged PR] --> B[拉取 PR 列表]
     B --> C[读取 PR diff 和变更文件]
-    C --> D[按文件名匹配本地 GaussDB ODBC]
+    C --> D[按 Profile 匹配本地 GaussDB ODBC / JDBC]
     D --> E[提取本地相关代码片段]
     E --> F[构造 AI 分析 Prompt]
     F --> G[AI 判断同步状态]
@@ -220,7 +220,8 @@ flowchart LR
 
 用户启动工具后，需要配置：
 
-- 本地 GaussDB ODBC 仓库路径。
+- 驱动 Profile：ODBC 或 JDBC。
+- 当前 Profile 对应的本地 GaussDB 驱动仓库路径。
 - AI 接口类型和模型。
 - GitHub Token。
 - 可选 HTTP 代理。
@@ -232,13 +233,14 @@ flowchart LR
 
 ### 6.2 PR 列表获取
 
-工具按驱动 Profile 从 GitHub API 拉取对应上游仓库中 closed 且已 merge 的 PR，并在页面展示。当前支持的 Profile 包括 ODBC、JDBC 和 libpq：
+工具按驱动 Profile 从 GitHub API 拉取对应上游仓库中 closed 且已 merge 的 PR，并在页面展示。当前支持的 Profile 包括 ODBC 和 JDBC：
 
 | Profile | 上游来源 | 本地代码路径 |
 | --- | --- | --- |
 | ODBC | `postgresql-interfaces/psqlodbc` | GaussDB ODBC 仓库 |
 | JDBC | `pgjdbc/pgjdbc` | GaussDB JDBC 仓库 |
-| libpq | `postgres/postgres` 的 `src/interfaces/libpq/` | GaussDB libpq 目录 |
+
+说明：libpq 暂不纳入当前 PR 追踪模型。`postgres/postgres` 在 GitHub 上不适合按 merged PR 工作流获取修复线索，后续如需覆盖 libpq，应单独建设 commit / mailing list 追踪链路。
 
 页面主要展示：
 
@@ -257,8 +259,8 @@ flowchart LR
 
 1. 拉取该 PR 的详细信息。
 2. 拉取该 PR 的 changed files 和 patch。
-3. 过滤 `.c`、`.h` 等驱动核心代码文件。
-4. 按上游文件名在本地 GaussDB ODBC 仓库中匹配。
+3. 按 Profile 过滤驱动核心代码文件，例如 ODBC 的 `.c/.h`、JDBC 的 `.java/.xml/.properties`。
+4. 按上游文件名在本地 GaussDB 驱动仓库中匹配。
 5. 提取上游新增 / 删除逻辑线索。
 6. 提取本地相关函数和代码片段。
 7. 调用 AI 生成结构化分析。
@@ -299,19 +301,21 @@ gaussdb-pr-tracker
 | 模块 | 职责 |
 | --- | --- |
 | Settings | 读取 `.env`、`data/settings.json` 和 ClaudeCode 配置。 |
+| Driver Profiles | 管理 ODBC / JDBC 的上游仓库、本地路径、源码过滤规则和 Prompt 语境。 |
 | GitHub Helper | 调用 GitHub API 获取 PR 列表、PR 详情和 diff 文件。 |
-| Local Code Search | 在本地 GaussDB ODBC 仓库中匹配上游文件。 |
+| Local Code Search | 在当前 Profile 的本地 GaussDB 驱动仓库中匹配上游文件。 |
 | Patch Parser | 提取上游新增行、删除行、函数名和关键标识符。 |
 | AI Layer | 统一 Anthropic 兼容接口和 MiniMax 原生接口。 |
 | JSON Parser | 清洗 AI 输出，剥离 `<think>`，修复和解析 JSON。 |
-| Result Cache | 缓存分析结果，避免重复调用 AI。 |
+| Result Cache | 按 Profile 缓存 PR 列表和分析结果，避免 ODBC / JDBC 结果混淆。 |
 
 ### 7.3 前端模块
 
 | 模块 | 职责 |
 | --- | --- |
 | Setup Page | 首次配置本地路径、AI 和 GitHub Token。 |
-| Dashboard | 展示 PR 列表和统计卡片。 |
+| Profile Selector | 在 ODBC / JDBC 之间切换分析对象。 |
+| Dashboard | 展示当前 Profile 的 PR 列表和统计卡片。 |
 | Filter Tabs | 按风险等级和未分析状态筛选。 |
 | Detail Panel | 展示单个 PR 的 AI 分析结论。 |
 | Settings Modal | 修改配置、导入 ClaudeCode 配置。 |
@@ -325,7 +329,7 @@ gaussdb-pr-tracker
 
 初始版本中，AI 容易只输出 PR 的问题摘要，或者看到本地文件后直接建议同步修复。实际质量排查需要更准确的问题：
 
-> 本地 GaussDB ODBC 是否已经合入了等价修复？
+> 本地 GaussDB 驱动代码是否已经合入了等价修复？
 
 因此分析结果被设计为四类状态：
 
@@ -488,7 +492,7 @@ sk-x...xxxx
 
 ### 11.1 上游高危修复同步排查
 
-当上游 psqlODBC 合入内存安全、缓冲区边界、空指针等修复时，工具可以快速判断 GaussDB ODBC 是否存在同源风险。
+当上游 psqlODBC 或 pgjdbc 合入内存安全、缓冲区边界、空指针、协议状态、数据绑定等修复时，工具可以快速判断对应 GaussDB 驱动是否存在同源风险。
 
 ### 11.2 历史 PR 批量回溯
 
@@ -525,7 +529,8 @@ GaussDB PR Tracker -> http://localhost:3000
 
 配置内容：
 
-- 本地 GaussDB ODBC 仓库路径。
+- 驱动 Profile。
+- 本地 GaussDB ODBC / JDBC 仓库路径。
 - AI Provider。
 - GitHub Token。
 - 代理。
@@ -542,7 +547,7 @@ GaussDB PR Tracker -> http://localhost:3000
 
 ### 12.4 点击分析
 
-AI 分析该 PR 是否影响本地 GaussDB ODBC。
+AI 分析该 PR 是否影响当前 Profile 对应的本地 GaussDB 驱动代码。
 
 > 截图占位：分析中状态  
 > 建议文件：`docs/images/07-analyzing.png`
@@ -609,10 +614,11 @@ AI 分析该 PR 是否影响本地 GaussDB ODBC。
 
 - 找到了真实、高频、有价值的质量排查场景。
 - 没有停留在聊天式问答，而是形成了完整工具。
-- 支持本地代码仓输入，能结合实际 GaussDB ODBC 代码分析。
+- 支持本地代码仓输入，能结合实际 GaussDB ODBC / JDBC 代码分析。
 - 支持 ClaudeCode 配置迁移，降低内网部署成本。
 - 引入结构化 JSON 输出，便于缓存、展示和复核。
 - 增加 AI 输出修复链路，提升内网模型稳定性。
+- 引入驱动 Profile 机制，使 ODBC 与 JDBC 的上游来源、路径配置、缓存和 Prompt 语境互相隔离。
 
 ### 14.2 关键经验
 
@@ -635,13 +641,13 @@ AI 分析该 PR 是否影响本地 GaussDB ODBC。
 
 ## 15. 推广计划
 
-### 15.1 横向推广到其他驱动
+### 15.1 横向推广到驱动质量排查
 
-| 驱动 | 可推广方式 |
+| 驱动 | 当前状态 |
 | --- | --- |
-| PGJDBC / GaussDB JDBC | 跟踪 `pgjdbc` 上游 merged PR。 |
-| libpq | 跟踪 PostgreSQL libpq 相关提交和 openGauss 差异。 |
-| ODBC | 持续跟踪 `psqlodbc`。 |
+| ODBC | 已支持，持续跟踪 `postgresql-interfaces/psqlodbc`。 |
+| JDBC | 已支持，持续跟踪 `pgjdbc/pgjdbc`。 |
+| libpq | 暂不纳入 PR 模型；PostgreSQL 官方 GitHub 仓库不适合按 merged PR 追踪，后续应单独设计 commit / mailing list 方案。 |
 
 ### 15.2 扩展数据源
 
@@ -674,7 +680,7 @@ AI 分析该 PR 是否影响本地 GaussDB ODBC。
 - AI 结论仍需人工复核，不能直接作为最终合入依据。
 - 大型 PR 的上下文可能被截断。
 - 内网模型质量会影响分析稳定性。
-- 当前主要验证 ODBC 场景，其他驱动需要适配。
+- 当前支持 ODBC / JDBC merged PR 工作流；libpq 暂不适用该数据源模型。
 
 ### 16.2 后续优化方向
 
@@ -712,7 +718,9 @@ AI_PROVIDER=anthropic
 ANTHROPIC_AUTH_TOKEN=sk-REPLACE_ME
 ANTHROPIC_BASE_URL=http://your-intranet-ai-gateway:8888/
 ANTHROPIC_MODEL=MiniMax-M2.7
+GAUSSDB_DRIVER_PROFILE=odbc
 GAUSSDB_ODBC_PATH=D:/GaussDB/openGauss-connector-odbc
+GAUSSDB_JDBC_PATH=D:/GaussDB/openGauss-connector-jdbc
 GITHUB_TOKEN=ghp_REPLACE_ME
 ```
 

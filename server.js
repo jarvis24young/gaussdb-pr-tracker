@@ -55,23 +55,6 @@ const DRIVER_PROFILES = {
     promptExpert: '熟悉 pgjdbc 与 GaussDB JDBC 驱动代码',
     promptTarget: '本地 GaussDB JDBC 仓库',
   },
-  libpq: {
-    id: 'libpq',
-    name: 'GaussDB libpq',
-    shortName: 'libpq',
-    upstreamRepo: 'postgres/postgres',
-    upstreamLabel: 'PostgreSQL 官方 libpq',
-    upstreamPathPrefix: 'src/interfaces/libpq/',
-    localPathKey: 'gaussdbLibpqPath',
-    envPathKey: 'GAUSSDB_LIBPQ_PATH',
-    localPathLabel: '本地 GaussDB libpq 代码路径',
-    localPathPlaceholder: '例：D:/GaussDB/openGauss-server/src/common/interfaces/libpq',
-    sourceFilePattern: /\.(c|h)$/i,
-    codeFence: 'c',
-    maxSearchDepth: 6,
-    promptExpert: '熟悉 PostgreSQL libpq 与 GaussDB libpq 客户端代码',
-    promptTarget: '本地 GaussDB libpq 目录',
-  },
 };
 
 function normalizeProfileId(profileId) {
@@ -297,8 +280,6 @@ function loadSettings() {
     driverProfile:    process.env.GAUSSDB_DRIVER_PROFILE || process.env.DRIVER_PROFILE || 'odbc',
     gaussdbOdbcPath:  process.env.GAUSSDB_ODBC_PATH || '',
     gaussdbJdbcPath:  process.env.GAUSSDB_JDBC_PATH || '',
-    gaussdbLibpqPath: process.env.GAUSSDB_LIBPQ_PATH
-      || (process.env.GAUSSDB_SERVER_PATH ? join(process.env.GAUSSDB_SERVER_PATH, 'src', 'common', 'interfaces', 'libpq') : ''),
     aiProvider:       defaultAiProvider(),
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || claudeDefaults.anthropicBaseUrl || '',
     anthropicApiKey:  process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || claudeDefaults.anthropicApiKey || '',
@@ -343,7 +324,6 @@ app.get('/api/settings', (req, res) => {
     driverProfile:    s.driverProfile,
     gaussdbOdbcPath:  s.gaussdbOdbcPath  || '',
     gaussdbJdbcPath:  s.gaussdbJdbcPath  || '',
-    gaussdbLibpqPath: s.gaussdbLibpqPath || '',
     aiProvider:       s.aiProvider,
     anthropicBaseUrl: s.anthropicBaseUrl || '',
     anthropicModel:   s.anthropicModel   || 'claude-sonnet-4.6',
@@ -359,7 +339,7 @@ app.get('/api/settings', (req, res) => {
 
 app.post('/api/settings', (req, res) => {
   const allowed = [
-    'driverProfile', 'gaussdbOdbcPath', 'gaussdbJdbcPath', 'gaussdbLibpqPath', 'aiProvider',
+    'driverProfile', 'gaussdbOdbcPath', 'gaussdbJdbcPath', 'aiProvider',
     'anthropicApiKey', 'anthropicBaseUrl', 'anthropicModel',
     'minimaxApiKey', 'minimaxModel', 'minimaxBaseUrl',
     'githubToken', 'proxy',
@@ -369,7 +349,7 @@ app.post('/api/settings', (req, res) => {
     const val = req.body[key];
     // Only overwrite if value was explicitly sent and non-empty (except paths which can be empty string)
     if (val !== undefined && (val !== '' || [
-      'gaussdbOdbcPath', 'gaussdbJdbcPath', 'gaussdbLibpqPath',
+      'gaussdbOdbcPath', 'gaussdbJdbcPath',
       'anthropicBaseUrl', 'proxy', 'minimaxBaseUrl',
     ].includes(key))) {
       patch[key] = val;
@@ -515,9 +495,6 @@ const SKIP_LOCAL_DIRS = new Set([
 function basenameCandidates(upstreamFilename, profile) {
   const fname = basename(upstreamFilename);
   const names = new Set([fname]);
-  if (profile.id === 'libpq' && fname.endsWith('.c')) {
-    names.add(fname.replace(/\.c$/i, '.cpp'));
-  }
   return [...names];
 }
 
@@ -526,7 +503,6 @@ function localRelativeCandidates(upstreamFilename, profile) {
   if (profile.upstreamPathPrefix && upstreamFilename.startsWith(profile.upstreamPathPrefix)) {
     const rel = upstreamFilename.slice(profile.upstreamPathPrefix.length);
     candidates.push(rel);
-    if (profile.id === 'libpq' && rel.endsWith('.c')) candidates.push(rel.replace(/\.c$/i, '.cpp'));
   }
   return candidates;
 }
@@ -683,7 +659,6 @@ app.get('/api/debug', (req, res) => {
     hasKey:          s.aiProvider === 'minimax' ? !!s.minimaxApiKey : !!s.anthropicApiKey,
     gaussdbOdbcPath: s.gaussdbOdbcPath || '(未设置)',
     gaussdbJdbcPath: s.gaussdbJdbcPath || '(未设置)',
-    gaussdbLibpqPath: s.gaussdbLibpqPath || '(未设置)',
   });
 });
 
