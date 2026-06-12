@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">GaussDB Driver Quality Radar 总体架构</title>
+  <desc id="desc">Four-layer architecture diagram for upstream PR intelligence collection, source mapping, dual-engine analysis, and report output.</desc>
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif; font-size: 44px; font-weight: 650; fill: #0f172a; letter-spacing: .2px; }
+      .hairline { stroke: #94a3b8; stroke-width: 1.4; }
+      .layer { fill: #fbfdff; stroke: #64748b; stroke-width: 1.6; }
+      .layer-teal { fill: #f8fffe; stroke: #0f766e; stroke-width: 1.6; }
+      .layer-title { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif; font-size: 30px; font-weight: 650; fill: #1f3a5f; }
+      .layer-title-teal { fill: #0f766e; }
+      .index { fill: #1f3a5f; }
+      .index-teal { fill: #0f766e; }
+      .index-text { font-family: "Segoe UI", Arial, sans-serif; font-size: 22px; font-weight: 700; fill: #ffffff; }
+      .divider { stroke: #cbd5e1; stroke-width: 1.5; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.3; }
+      .box-teal { fill: #ffffff; stroke: #5aa6a0; stroke-width: 1.3; }
+      .panel { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.35; stroke-dasharray: 8 6; }
+      .panel-teal { fill: #ffffff; stroke: #5aa6a0; stroke-width: 1.35; stroke-dasharray: 8 6; }
+      .module { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif; font-size: 20px; font-weight: 520; fill: #1e293b; }
+      .module-small { font-size: 18px; }
+      .panel-title { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif; font-size: 21px; font-weight: 650; fill: #1f3a5f; }
+      .panel-title-teal { fill: #0f766e; }
+      .arrow { stroke: #475569; stroke-width: 1.8; fill: none; marker-end: url(#arrowhead); }
+      .arrow-strong { stroke: #1f3a5f; stroke-width: 2; fill: none; marker-end: url(#arrowhead-strong); }
+    </style>
+    <marker id="arrowhead" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#475569" />
+    </marker>
+    <marker id="arrowhead-strong" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#1f3a5f" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="900" />
+
+  <line class="hairline" x1="178" y1="74" x2="372" y2="74" />
+  <circle cx="376" cy="74" r="3.5" fill="#64748b" />
+  <text class="title" x="800" y="90" text-anchor="middle">GaussDB Driver Quality Radar 总体架构</text>
+  <circle cx="1224" cy="74" r="3.5" fill="#64748b" />
+  <line class="hairline" x1="1228" y1="74" x2="1422" y2="74" />
+
+  <!-- Layer 1 -->
+  <g transform="translate(70 135)">
+    <rect class="layer" x="0" y="0" width="1460" height="132" rx="8" />
+    <rect class="index" x="36" y="46" width="44" height="40" rx="7" />
+    <text class="index-text" x="58" y="73" text-anchor="middle">01</text>
+    <text class="layer-title" x="112" y="77">情报采集层</text>
+    <line class="divider" x1="300" y1="30" x2="300" y2="102" />
+    <rect class="box" x="350" y="36" width="285" height="60" rx="8" />
+    <text class="module" x="492.5" y="73" text-anchor="middle">GitHub API</text>
+    <rect class="box" x="700" y="36" width="340" height="60" rx="8" />
+    <text class="module" x="870" y="73" text-anchor="middle">按 Profile 拉取 merged PR</text>
+    <rect class="box" x="1110" y="36" width="285" height="60" rx="8" />
+    <text class="module" x="1252.5" y="73" text-anchor="middle">本地缓存</text>
+  </g>
+  <path class="arrow" d="M800 267 L800 314" />
+
+  <!-- Layer 2 -->
+  <g transform="translate(70 325)">
+    <rect class="layer-teal" x="0" y="0" width="1460" height="142" rx="8" />
+    <rect class="index-teal" x="36" y="51" width="44" height="40" rx="7" />
+    <text class="index-text" x="58" y="78" text-anchor="middle">02</text>
+    <text class="layer-title layer-title-teal" x="112" y="82">源码映射层</text>
+    <line class="divider" x1="300" y1="32" x2="300" y2="110" />
+    <rect class="box-teal" x="330" y="42" width="160" height="60" rx="8" />
+    <text class="module module-small" x="410" y="67" text-anchor="middle">
+      <tspan x="410" dy="0">Driver Profile</tspan>
+      <tspan x="410" dy="23">识别</tspan>
+    </text>
+    <rect class="box-teal" x="515" y="42" width="172" height="60" rx="8" />
+    <text class="module module-small" x="601" y="67" text-anchor="middle">
+      <tspan x="601" dy="0">文件过滤</tspan>
+      <tspan x="601" dy="23">排除 test/docs</tspan>
+    </text>
+    <rect class="box-teal" x="712" y="42" width="180" height="60" rx="8" />
+    <text class="module module-small" x="802" y="79" text-anchor="middle">上游文件名匹配</text>
+    <rect class="box-teal" x="917" y="42" width="190" height="60" rx="8" />
+    <text class="module module-small" x="1012" y="67" text-anchor="middle">
+      <tspan x="1012" dy="0">Patch 函数名</tspan>
+      <tspan x="1012" dy="23">全仓库搜索</tspan>
+    </text>
+    <rect class="box-teal" x="1132" y="42" width="190" height="60" rx="8" />
+    <text class="module module-small" x="1227" y="67" text-anchor="middle">
+      <tspan x="1227" dy="0">精确代码行</tspan>
+      <tspan x="1227" dy="23">归一化命中</tspan>
+    </text>
+    <rect class="box-teal" x="1347" y="42" width="98" height="60" rx="8" />
+    <text class="module module-small" x="1396" y="67" text-anchor="middle">
+      <tspan x="1396" dy="0">修复意图</tspan>
+      <tspan x="1396" dy="23">提取</tspan>
+    </text>
+  </g>
+  <path class="arrow" d="M800 467 L800 516" />
+
+  <!-- Layer 3 -->
+  <g transform="translate(70 528)">
+    <rect class="layer" x="0" y="0" width="1460" height="166" rx="8" />
+    <rect class="index" x="36" y="63" width="44" height="40" rx="7" />
+    <text class="index-text" x="58" y="90" text-anchor="middle">03</text>
+    <text class="layer-title" x="112" y="94">双引擎分析层</text>
+    <line class="divider" x1="300" y1="34" x2="300" y2="132" />
+
+    <rect class="panel" x="330" y="32" width="380" height="102" rx="10" />
+    <text class="panel-title" x="520" y="65" text-anchor="middle">规则引擎 V2</text>
+    <rect class="box" x="360" y="82" width="145" height="38" rx="7" />
+    <text class="module module-small" x="432.5" y="107" text-anchor="middle">精确代码行命中</text>
+    <rect class="box" x="525" y="82" width="145" height="38" rx="7" />
+    <text class="module module-small" x="597.5" y="107" text-anchor="middle">高置信短路径</text>
+
+    <path class="arrow-strong" d="M736 83 L780 83" />
+
+    <rect class="panel-teal" x="810" y="32" width="615" height="102" rx="10" />
+    <text class="panel-title panel-title-teal" x="1117.5" y="65" text-anchor="middle">AI 专家分析</text>
+    <rect class="box-teal" x="840" y="82" width="225" height="38" rx="7" />
+    <text class="module module-small" x="952.5" y="107" text-anchor="middle">SOURCE_CONFIRMED 方法</text>
+    <rect class="box-teal" x="1085" y="82" width="150" height="38" rx="7" />
+    <text class="module module-small" x="1160" y="107" text-anchor="middle">等价修复比对</text>
+    <rect class="box-teal" x="1255" y="82" width="140" height="38" rx="7" />
+    <text class="module module-small" x="1325" y="107" text-anchor="middle">容错自修复</text>
+  </g>
+  <path class="arrow" d="M800 694 L800 744" />
+
+  <!-- Layer 4 -->
+  <g transform="translate(70 756)">
+    <rect class="layer" x="0" y="0" width="1460" height="104" rx="8" />
+    <rect class="index" x="36" y="32" width="44" height="40" rx="7" />
+    <text class="index-text" x="58" y="59" text-anchor="middle">04</text>
+    <text class="layer-title" x="112" y="63">输出与沉淀层</text>
+    <line class="divider" x1="300" y1="22" x2="300" y2="82" />
+    <rect class="box" x="330" y="30" width="160" height="44" rx="8" />
+    <text class="module module-small" x="410" y="58" text-anchor="middle">风险分级</text>
+    <rect class="box" x="520" y="30" width="360" height="44" rx="8" />
+    <text class="module module-small" x="700" y="58" text-anchor="middle">证据链：文件路径 + 行号 + 代码内容</text>
+    <rect class="box" x="910" y="30" width="150" height="44" rx="8" />
+    <text class="module module-small" x="985" y="58" text-anchor="middle">Dashboard</text>
+    <rect class="box" x="1090" y="30" width="150" height="44" rx="8" />
+    <text class="module module-small" x="1165" y="58" text-anchor="middle">报告中心</text>
+    <rect class="box" x="1270" y="30" width="150" height="44" rx="8" />
+    <text class="module module-small" x="1345" y="58" text-anchor="middle">人工复核入口</text>
+  </g>
+</svg>
